@@ -1,0 +1,54 @@
+[project]
+name = "pdftr"
+version = "0.1.0"
+description = "English PDF textbook -> bilingual EN/TH PDF + pgvector chunks"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "docling>=2.60",
+    "pymupdf>=1.26",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.4",
+    "pydantic-settings>=2.6",
+    "typer>=0.15",
+    "rich>=13.9",
+    "nvidia-ml-py>=12.570",
+    "torch",
+    "torchvision",
+]
+
+[project.scripts]
+pdftr = "pdftr.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.9,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Keep uv's download cache on drive D (drive C is nearly full).
+cache-dir = "D:/Python/PDFTranslator/.cache/uv"
+# Never download a Python interpreter implicitly (it would land on drive C).
+# Install explicitly with UV_PYTHON_INSTALL_DIR set; see scripts/env.ps1.
+python-downloads = "manual"
+
+# PyTorch with CUDA 12.8 (RTX 2070 SUPER, driver supports CUDA 13.2).
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+torchvision = [{ index = "pytorch-cu128" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

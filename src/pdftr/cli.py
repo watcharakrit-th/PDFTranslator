@@ -1,0 +1,289 @@
+"""pdftr command line."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="English PDF textbook -> bilingual EN/TH PDF + pgvector chunks.",
+)
+db_app = typer.Typer(no_args_is_help=True, help="Database (PostgreSQL + pgvector in Docker).")
+app.add_typer(db_app, name="db")
+console = Console()
+
+
+@app.callback()
+def _setup() -> None:
+    # Thai and box-drawing characters on the Windows console
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+def parse_pages(spec: str | None) -> tuple[int, int]:
+    """'1-100' -> (1, 100); '15' -> (15, 15); None -> whole document."""
+    if not spec:
+        return 1, 10**9
+    if "-" in spec:
+        a, b = spec.split("-", 1)
+        return int(a), int(b) if b else 10**9
+    return int(spec), int(spec)
+
+
+# ------------------------------------------------------------------------------- db
+@db_app.command("up")
+def db_up() -> None:
+    """Start the database container and create the tables."""
+    from pdftr.db import compose_up, connect, init_schema
+
+    compose_up()
+    with connect() as conn:
+        init_schema(conn)
+    console.print("[green]Database ready[/] at 127.0.0.1:5433")
+
+
+@db_app.command("status")
+def db_status() -> None:
+    """Show database version and row counts."""
+    from pdftr.db import connect
+
+    with connect() as conn:
+        version = conn.execute("SHOW server_version").fetchone()["server_version"]
+        ext = conn.execute("SELECT extversion FROM pg_extension WHERE extname='vector'").fetchone()
+        table = Table("table", "rows")
+        for name in ("documents", "pages", "blocks", "chunks", "terms", "doc_terms", "jobs"):
+            n = conn.execute(f"SELECT count(*) AS n FROM {name}").fetchone()["n"]
+            table.add_row(name, str(n))
+    console.print(f"PostgreSQL {version}, pgvector {ext['extversion'] if ext else 'missing'}")
+    console.print(table)
+
+
+# ------------------------------------------------------------------------------ gpu
+@app.command()
+def gpu() -> None:
+    """Show GPU temperature and load."""
+    from pdftr.gpu import GpuGuard
+
+    status = GpuGuard().status()
+    if status is None:
+        console.print("No NVIDIA GPU visible")
+        return
+    console.print(
+        f"{status.temperature_c}°C, load {status.utilization_pct}%, "
+        f"{status.power_w:.0f} W, fan {status.fan_pct}%, "
+        f"VRAM {status.memory_used_mb}/{status.memory_total_mb} MB"
+    )
+
+
+# --------------------------------------------------------------------------- ingest
+@app.command()
+def ingest(
+    pdf: Path = typer.Argument(..., exists=True, dir_okay=False, help="PDF file"),
+    pages: str = typer.Option(None, "--pages", "-p", help="Page range, e.g. 1-100"),
+    force: bool = typer.Option(False, help="Delete this document's data and start over"),
+    no_db: bool = typer.Option(False, "--no-db", help="Only write the JSON dump"),
+) -> None:
+    """Extract, cut and collect terms (ready for review step R1)."""
+    from pdftr.ingest.pipeline import AlreadyIngested
+    from pdftr.ingest.pipeline import ingest as run
+
+    first, last = parse_pages(pages)
+    if force and not typer.confirm("--force deletes this document's chunks and reviews. Continue?"):
+        raise typer.Abort()
+    try:
+        summary = run(pdf, first, last, force=force, use_db=not no_db, log=console.print)
+    except AlreadyIngested as exc:
+        console.print(f"[yellow]{exc}[/]")
+        raise typer.Exit(1) from exc
+    table = Table("item", "value", show_header=False)
+    for key, value in summary.items():
+        table.add_row(key, str(value))
+    console.print(table)
+
+
+# --------------------------------------------------------------------------- inspect
+@app.command()
+def docs() -> None:
+    """List documents."""
+    from pdftr.db import connect
+
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT d.id, d.file_name, d.page_count, d.stage,
+                      count(p.*) AS ingested, min(p.page_no) AS first, max(p.page_no) AS last
+               FROM documents d LEFT JOIN pages p ON p.doc_id = d.id
+               GROUP BY d.id ORDER BY d.id"""
+        ).fetchall()
+    table = Table("id", "file", "pages", "ingested", "stage")
+    for r in rows:
+        table.add_row(
+            str(r["id"]),
+            r["file_name"][:60],
+            str(r["page_count"]),
+            f"{r['ingested']} ({r['first']}-{r['last']})",
+            r["stage"],
+        )
+    console.print(table)
+
+
+@app.command()
+def stats(doc_id: int) -> None:
+    """Counts by page kind, block role, chunk kind and flag."""
+    from pdftr.db import connect
+
+    queries = {
+        "page kinds": "SELECT kind AS k, count(*) AS n FROM pages WHERE doc_id=%s GROUP BY 1 ORDER BY 2 DESC",
+        "block roles": "SELECT role AS k, count(*) AS n FROM blocks WHERE doc_id=%s GROUP BY 1 ORDER BY 2 DESC",
+        "chunk kinds": "SELECT kind || CASE WHEN embed THEN '' ELSE ' (not embedded)' END AS k, "
+        "count(*) AS n FROM chunks WHERE doc_id=%s GROUP BY 1 ORDER BY 2 DESC",
+        "chunk flags": "SELECT unnest(flags) AS k, count(*) AS n FROM chunks WHERE doc_id=%s "
+        "GROUP BY 1 ORDER BY 2 DESC",
+        "term kinds": "SELECT t.kind AS k, count(*) AS n FROM doc_terms dt JOIN terms t ON t.id=dt.term_id "
+        "WHERE dt.doc_id=%s GROUP BY 1 ORDER BY 2 DESC",
+    }
+    with connect() as conn:
+        for title, sql in queries.items():
+            table = Table(title, "count")
+            for r in conn.execute(sql, (doc_id,)).fetchall():
+                table.add_row(str(r["k"]), str(r["n"]))
+            console.print(table)
+
+
+@app.command()
+def show(doc_id: int, page: int) -> None:
+    """Print the blocks and chunks of one page."""
+    from pdftr.db import connect
+
+    with connect() as conn:
+        blocks = conn.execute(
+            "SELECT id, ord, role, level, translate, flags, text_en FROM blocks "
+            "WHERE doc_id=%s AND page_no=%s ORDER BY ord",
+            (doc_id, page),
+        ).fetchall()
+        chunks = conn.execute(
+            "SELECT ord, part, kind, embed, flags, context_en, text_en, page_start, page_end "
+            "FROM chunks WHERE doc_id=%s AND %s BETWEEN page_start AND page_end ORDER BY ord, part",
+            (doc_id, page),
+        ).fetchall()
+    console.rule(f"page {page}: {len(blocks)} blocks")
+    for b in blocks:
+        lvl = f" L{b['level']}" if b["level"] is not None else ""
+        tr = "" if b["translate"] else " [dim](kept English)[/]"
+        console.print(
+            f"[bold]{b['ord']}[/] {b['role']}{lvl}{tr} {b['flags'] or ''}: {b['text_en'][:110]!r}"
+        )
+    console.rule(f"{len(chunks)} chunks")
+    for c in chunks:
+        span = f"p{c['page_start']}" + (
+            f"-{c['page_end']}" if c["page_end"] != c["page_start"] else ""
+        )
+        emb = "" if c["embed"] else " [dim](not embedded)[/]"
+        console.print(
+            f"[bold cyan]{c['ord']}.{c['part']}[/] {c['kind']} {span}{emb} {c['flags'] or ''}"
+        )
+        if c["context_en"]:
+            console.print(f"   [dim]{c['context_en']}[/]".replace("\n", " | "))
+        console.print(f"   {c['text_en'][:300]}")
+
+
+@app.command()
+def terms(
+    doc_id: int, top: int = 40, kind: str = typer.Option(None, help="term|acronym|code")
+) -> None:
+    """Show collected term candidates (most frequent first)."""
+    from pdftr.db import connect
+
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT t.term_en, t.kind, t.decision, dt.freq, dt.first_page, dt.sources, dt.example
+               FROM doc_terms dt JOIN terms t ON t.id = dt.term_id
+               WHERE dt.doc_id = %s AND (%s::text IS NULL OR t.kind = %s)
+               ORDER BY dt.freq DESC, t.term_en LIMIT %s""",
+            (doc_id, kind, kind, top),
+        ).fetchall()
+    table = Table("term", "kind", "freq", "page", "sources", "example")
+    for r in rows:
+        table.add_row(
+            r["term_en"],
+            r["kind"],
+            str(r["freq"]),
+            str(r["first_page"]),
+            ",".join(r["sources"]),
+            (r["example"] or "")[:60],
+        )
+    console.print(table)
+
+
+ROLE_COLORS = {
+    "heading": (0.85, 0.1, 0.1),
+    "paragraph": (0.1, 0.35, 0.9),
+    "list_item": (0.0, 0.6, 0.2),
+    "callout": (0.6, 0.2, 0.8),
+    "caption": (0.95, 0.5, 0.0),
+    "footnote": (0.95, 0.5, 0.0),
+    "code": (0.35, 0.35, 0.35),
+    "table": (0.0, 0.6, 0.6),
+    "toc": (0.5, 0.3, 0.1),
+    "picture": (0.75, 0.75, 0.0),
+    "formula": (0.75, 0.75, 0.0),
+    "header": (0.65, 0.65, 0.65),
+    "footer": (0.65, 0.65, 0.65),
+    "other": (1.0, 0.0, 1.0),
+}
+
+
+@app.command("debug-pages")
+def debug_pages(doc_id: int, pages: str = typer.Option(..., "--pages", "-p")) -> None:
+    """Draw block boxes and chunk numbers on page images (data/doc_<id>/debug/)."""
+    import pymupdf
+
+    from pdftr.db import connect
+    from pdftr.settings import get_settings
+
+    first, last = parse_pages(pages)
+    out_dir = get_settings().data_dir / f"doc_{doc_id}" / "debug"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with connect() as conn:
+        path = conn.execute("SELECT file_path FROM documents WHERE id=%s", (doc_id,)).fetchone()[
+            "file_path"
+        ]
+        chunk_rows = conn.execute(
+            "SELECT ord, part, kind, embed, block_ids FROM chunks WHERE doc_id=%s ORDER BY ord, part",
+            (doc_id,),
+        ).fetchall()
+        label_of: dict[int, str] = {}
+        for n, c in enumerate(chunk_rows, 1):
+            for bid in c["block_ids"]:
+                label_of.setdefault(bid, f"#{n}{'' if c['embed'] else '*'}")
+        pdf = pymupdf.open(path)
+        written = []
+        for p in range(first, min(last, pdf.page_count) + 1):
+            rows = conn.execute(
+                "SELECT id, role, x0, y0, x1, y1 FROM blocks WHERE doc_id=%s AND "
+                "page_no=%s ORDER BY ord",
+                (doc_id, p),
+            ).fetchall()
+            page = pdf[p - 1]
+            for r in rows:
+                color = ROLE_COLORS.get(r["role"], (1, 0, 1))
+                rect = pymupdf.Rect(r["x0"], r["y0"], r["x1"], r["y1"])
+                page.draw_rect(rect, color=color, width=0.9)
+                tag = f"{r['role']} {label_of.get(r['id'], '')}".strip()
+                page.insert_text(
+                    (rect.x0 + 1, max(6, rect.y0 - 1.5)), tag, fontsize=5.5, color=color
+                )
+            out = out_dir / f"p{p:04d}.png"
+            page.get_pixmap(dpi=90).save(out)
+            written.append(out)
+    console.print(
+        f"Wrote {len(written)} images to {out_dir}  (#n = chunk number, * = not embedded)"
+    )

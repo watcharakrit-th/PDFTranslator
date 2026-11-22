@@ -39,6 +39,9 @@ Cutting rules (your answers):
 | Paragraph | One chunk. Never cut in the middle. Parts split by a page or column break are joined. Over ~400 words: split at sentence ends (embedding only). |
 | One-line paragraph | Stays its own chunk. |
 | Bullet / numbered step | Each item is its own chunk, at every nesting level. |
+| Multiple-choice question | The question and its a–d options form one chunk. Options alone mean nothing in search. |
+| "Key Terms" list | Kept but not embedded. Each printed line becomes a glossary candidate for R2. |
+| "Label: value" line (e.g. "Estimated Time: 50 minutes") | A paragraph, not a heading, so it never enters the section path. |
 | Heading | Not embedded alone. Becomes the context of the chunks under it. |
 | Note / tip box, caption, footnote | Own chunk, embedded. |
 | Code block | Own chunk, embedded once. Never translated or changed. |
@@ -126,7 +129,7 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 
 | # | Delivers | You can then |
 |---|---|---|
-| M1 | Project skeleton, Docker Postgres, schema, `ingest` (Docling + PyMuPDF), cutter, term candidates | Ingest a book and inspect chunks in the DB |
+| M1 ✅ 2026-11-21 | Project skeleton, Docker Postgres, schema, `ingest` (Docling + PyMuPDF), cutter, term candidates | Ingest a book and inspect chunks in the DB |
 | M2 | Review web page: R1, R2, R3 | Review chunks and terms |
 | M3 | Typhoon engine, translation memory, R4 with Thai page preview | Get a fully translated, reviewed book |
 | M4 | Full-book renderer, side-by-side + alternate layouts, bookmarks, text-layer fix | Read the bilingual PDF |
@@ -137,6 +140,19 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 
 [prototype/page301_side_by_side.pdf](prototype/page301_side_by_side.pdf) shows CompTIA page 301, hand-translated by me to test rendering only. All 18 Thai blocks fit at full size with correct vowel and tone-mark stacking.
 
-## 12. Open items
+## 12. M1 results (CompTIA Linux+, pages 1–100)
+
+| Measure | Result |
+|---|---|
+| Time | 151 s for 100 pages (≈ 20 min for the whole book) |
+| GPU | Peak 67 °C in 5-page batches; no cool-down pauses needed |
+| Pages | 1 cover, 1 title, 2 copyright, 6 table of contents, 90 body |
+| Output | 1,598 blocks → 987 chunks (962 embedded) and 596 term candidates |
+
+- **Layout cache:** layout results are cached per 5-page batch. Re-running an ingest after a rule change takes about 10 s and does no GPU work.
+- **Missed lines:** Docling sometimes misses the first lines at the top of a page. These are kept as paragraphs flagged `orphan`, put in reading order by position, and joined to the previous page's unfinished sentence (9 such joins). R1 shows these flags.
+- **Noisy phrases:** phrase-frequency terms ("press enter") are noisy. The R2 page will show them apart from styled terms, Key Terms entries and acronyms.
+
+## 13. Open items
 
 - The third sample (*The Comprehensive DevOps Interview Guide*) is **damaged**. It was opened and saved as text, which replaced 5.3 million bytes with "�". Please copy it again from the original source using File Explorer, and don't open it in VS Code.
