@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% set step = "r1" %}
+{% block title %}R1 · p{{ page.page_no }} · {{ doc.title or doc.file_name }}{% endblock %}
+{% block content %}
+<div class="r1" data-doc="{{ doc.id }}">
+  <section class="pane page-pane" aria-label="Page">
+    <nav class="pagenav">
+      {% if prev_page %}<a class="btn" id="prev-page" href="?page={{ prev_page }}&only={{ only }}" title="Previous page (p)">◀</a>
+      {% else %}<span class="btn" aria-disabled="true">◀</span>{% endif %}
+      <form method="get" class="goto">
+        <label>Page <input name="page" value="{{ page.page_no }}" size="4" inputmode="numeric"></label>
+        <input type="hidden" name="only" value="{{ only }}">
+      </form>
+      {% if next_page %}<a class="btn" id="next-page" href="?page={{ next_page }}&only={{ only }}" title="Next page (n)">▶</a>
+      {% else %}<span class="btn" aria-disabled="true">▶</span>{% endif %}
+      <span class="muted">printed {{ page.label }}{% if page.kind != "body" %} · <strong>{{ page.kind }} page</strong>{% endif %}</span>
+      <span class="spacer"></span>
+      {% if next_flagged %}<a class="btn warn" id="next-flagged" href="?page={{ next_flagged }}&only={{ only }}" title="Next page with flagged chunks still pending (f)">⚑ Next flagged · {{ n_flagged_pages }} pages</a>{% endif %}
+      {% if next_pending %}<a class="btn" href="?page={{ next_pending }}&only={{ only }}">Next pending</a>{% endif %}
+    </nav>
+    <select class="chapters" aria-label="Chapter" onchange="location.href='?page=' + this.value + '&only={{ only }}'">
+      {% for ch in chapters %}
+      <option value="{{ ch.first_page }}" {% if ch.title == current_chapter %}selected{% endif %}>
+        {{ ch.title }} · {{ ch.pending }} pending</option>
+      {% endfor %}
+    </select>
+    <div class="pageimg" style="aspect-ratio: {{ page.width }} / {{ page.height }}">
+      <img src="/doc/{{ doc.id }}/page/{{ page.page_no }}.png" alt="Page {{ page.page_no }}">
+      {% for b in blocks %}
+      <div class="box role-{{ b.role }}{% if b.chunk_id %} has-chunk{% endif %}"
+           style="left:{{ pct(b.x0, page.width) }}%;top:{{ pct(b.y0, page.height) }}%;width:{{ pct(b.x1 - b.x0, page.width) }}%;height:{{ pct(b.y1 - b.y0, page.height) }}%"
+           {% if b.chunk_id %}data-chunk="{{ b.chunk_id }}"{% endif %} title="{{ b.role }}{% if b.flags %} · {{ b.flags|join(', ') }}{% endif %}">
+        <span class="tag">{{ b.n if b.n else b.role }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="legend">
+      <span class="sw role-paragraph"></span>paragraph <span class="sw role-list_item"></span>list item
+      <span class="sw role-callout"></span>note <span class="sw role-heading"></span>heading
+      <span class="sw role-caption"></span>caption <span class="sw role-code"></span>code
+      <span class="sw role-table"></span>table · grey = not a chunk
+    </p>
+  </section>
+
+  <section class="pane chunk-pane" aria-label="Chunks">
+    <div class="toolbar">
+      {% include "_progress.html" %}
+      <div class="row">
+        <span class="filters">Show
+          <a href="?page={{ page.page_no }}&only=all" class="{{ 'on' if only == 'all' }}">all</a>
+          <a href="?page={{ page.page_no }}&only=pending" class="{{ 'on' if only == 'pending' }}">pending</a>
+          <a href="?page={{ page.page_no }}&only=flagged" class="{{ 'on' if only == 'flagged' }}">flagged</a>
+        </span>
+        <span class="spacer"></span>
+        <button hx-post="/doc/{{ doc.id }}/r1/approve-page" hx-vals='{"page": {{ page.page_no }}}' title="Approve every pending chunk on this page (Shift+A)" id="approve-page">Approve page</button>
+        <button hx-post="/doc/{{ doc.id }}/r1/approve-chapter" hx-vals='{"page": {{ page.page_no }}}'
+                hx-confirm="Approve every pending chunk in “{{ current_chapter }}”?">Approve chapter</button>
+        <button hx-post="/doc/{{ doc.id }}/r1/approve-all" hx-confirm="Approve ALL pending chunks in this book?">Approve all</button>
+      </div>
+    </div>
+    <div id="chunks">
+      {% for c in chunks %}
+        {% set hidden = (only == "pending" and c.review_en != "pending") or (only == "flagged" and not c.flagged) %}
+        {% include "_chunk.html" %}
+      {% else %}
+        <p class="empty">No chunks on this page{% if page.kind != "body" %} ({{ page.kind }} pages are not embedded){% endif %}.</p>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

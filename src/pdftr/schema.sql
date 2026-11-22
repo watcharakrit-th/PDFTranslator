@@ -124,3 +124,22 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at  timestamptz NOT NULL DEFAULT now(),
     finished_at timestamptz
 );
+
+-- v2 (M2): review support. "ADD COLUMN IF NOT EXISTS" keeps this file re-runnable
+-- and upgrades an existing database in place.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS markup_en   text NOT NULL DEFAULT '';
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+ALTER TABLE terms  ADD COLUMN IF NOT EXISTS th_source   text;          -- seed|user|csv|mt
+ALTER TABLE terms  ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+
+-- Every review action, for auditing and (later) undo.
+CREATE TABLE IF NOT EXISTS review_log (
+    id      bigserial PRIMARY KEY,
+    doc_id  int REFERENCES documents(id) ON DELETE CASCADE,
+    step    text NOT NULL,                  -- r1|r2|r3
+    action  text NOT NULL,                  -- approve|edit|skip|merge|split|kind|decision|thai|complete
+    target  text,                           -- 'chunk:123', 'term:45', 'page:18'
+    detail  jsonb NOT NULL DEFAULT '{}',
+    at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS review_log_doc_idx ON review_log (doc_id, at);

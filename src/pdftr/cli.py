@@ -287,3 +287,80 @@ def debug_pages(doc_id: int, pages: str = typer.Option(..., "--pages", "-p")) ->
     console.print(
         f"Wrote {len(written)} images to {out_dir}  (#n = chunk number, * = not embedded)"
     )
+
+
+# --------------------------------------------------------------------------- review
+LOCAL_HOSTS = ("127.0.0.1", "localhost")
+
+
+@app.command()
+def review(
+    host: str = typer.Option("127.0.0.1", help="Address to listen on (default: this PC only)"),
+    port: int = typer.Option(8765, help="Port"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open the browser"),
+) -> None:
+    """Open the review web page (R1 English chunks, R2 English terms, R3 Thai terms)."""
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from pdftr.web.app import create_app
+
+    local = host in LOCAL_HOSTS
+    if not local:
+        console.print(
+            "[yellow]Warning:[/] the review page has no login. Expose it only on a "
+            "trusted network, or keep it on 127.0.0.1 and use an SSH tunnel."
+        )
+    url = f"http://{'127.0.0.1' if local or host == '0.0.0.0' else host}:{port}/"
+    if open_browser:
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    console.print(f"Review page: {url}   (Ctrl+C to stop)")
+    web = create_app(allowed_hosts=list(LOCAL_HOSTS) if local else ["*"])
+    uvicorn.run(web, host=host, port=port, log_level="warning")
+
+
+# ------------------------------------------------------------------------- glossary
+glossary_app = typer.Typer(
+    no_args_is_help=True, help="The shared glossary (English terms and their Thai)."
+)
+app.add_typer(glossary_app, name="glossary")
+
+
+@glossary_app.command("export")
+def glossary_export(path: Path = typer.Argument(..., help="CSV file to write")) -> None:
+    """Write the glossary to a CSV file (opens in Excel; UTF-8 for Thai)."""
+    from pdftr.db import connect
+    from pdftr.glossary import export_csv
+
+    with connect() as conn:
+        text = export_csv(conn)
+    path.write_text(text, encoding="utf-8-sig")
+    console.print(f"Wrote {text.count(chr(10)) - 1} terms to {path}")
+
+
+@glossary_app.command("import")
+def glossary_import(
+    path: Path = typer.Argument(..., exists=True, dir_okay=False, help="CSV file to read"),
+) -> None:
+    """Import a CSV (term_en, decision, term_th); its rows override and count as reviewed."""
+    from pdftr.db import connect
+    from pdftr.glossary import import_csv
+
+    with connect() as conn:
+        result = import_csv(conn, path.read_text(encoding="utf-8-sig"))
+    console.print(
+        f"{result['added']} added, {result['updated']} updated, {result['skipped']} skipped"
+    )
+
+
+@glossary_app.command("seed")
+def glossary_seed() -> None:
+    """Re-apply the built-in seed list to collected terms nobody has reviewed yet."""
+    from pdftr.db import connect
+    from pdftr.glossary import apply_seed
+
+    with connect() as conn:
+        n = apply_seed(conn)
+    console.print(f"Re-applied defaults to {n} unreviewed terms")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -15,6 +16,15 @@ from pdftr.settings import configure_environment, get_settings
 
 class AlreadyIngested(Exception):
     pass
+
+
+def document_title(meta_title: str | None, stem: str) -> str:
+    """The PDF's own title, unless it is missing or all capitals (often an internal
+    code such as "3P-EBK: ..."); then the file name without trailing "(...)" notes."""
+    title = (meta_title or "").strip()
+    if title and not title.isupper():
+        return title
+    return re.sub(r"(\s*\([^()]*\))+\s*$", "", stem).strip() or stem
 
 
 def sha256_file(path: Path) -> str:
@@ -183,7 +193,7 @@ def _run(
                     file_hash=file_hash,
                     file_name=pdf_path.name,
                     file_path=str(pdf_path),
-                    title=(pdf.metadata or {}).get("title") or pdf_path.stem,
+                    title=document_title((pdf.metadata or {}).get("title"), pdf_path.stem),
                     page_count=pdf.page_count,
                 )
                 conn.execute("UPDATE jobs SET doc_id=%s WHERE id=%s", (doc_id, job_id))

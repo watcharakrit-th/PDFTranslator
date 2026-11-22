@@ -1,0 +1,35 @@
+{% set review_col = "review_th" if step == "r3" else "review_en" %}
+<div class="toolbar terms-toolbar">
+  {% if step == "r2" %}
+  <nav class="tabs" aria-label="Term groups">
+    {% for key, (label, _cond) in tabs.items() %}
+    <a href="?tab={{ key }}&status={{ status }}" class="{{ 'on' if tab == key }}">{{ label }}
+      <span class="count">{{ counts[key].pending }}/{{ counts[key].total }}</span></a>
+    {% endfor %}
+  </nav>
+  {% endif %}
+  <div class="row">
+    <span class="filters">Show
+      {% if step == "r3" %}
+      <a href="?status=missing&q={{ q }}" class="{{ 'on' if status == 'missing' }}">missing Thai</a>
+      {% endif %}
+      <a href="?tab={{ tab }}&status=pending&q={{ q }}" class="{{ 'on' if status == 'pending' }}">pending</a>
+      <a href="?tab={{ tab }}&status=all&q={{ q }}" class="{{ 'on' if status == 'all' }}">all</a>
+    </span>
+    <form method="get" class="search">
+      <input type="hidden" name="tab" value="{{ tab }}"><input type="hidden" name="status" value="{{ status }}">
+      <input type="search" name="q" value="{{ q }}" placeholder="Search terms…" aria-label="Search terms">
+    </form>
+    <span class="spacer"></span>
+    <form hx-post="/doc/{{ doc.id }}/terms/approve-shown" class="inline">
+      <input type="hidden" name="step" value="{{ step }}">
+      {% for t in data.rows %}{% if t[review_col] == "pending" %}<input type="hidden" name="ids" value="{{ t.id }}">{% endif %}{% endfor %}
+      <button title="Approve the pending terms listed on this page">Approve shown</button>
+    </form>
+    {% if step_state == "current" %}
+    <button class="primary" hx-post="/doc/{{ doc.id }}/{{ step }}/complete"
+            {% if blocker %}disabled title="{{ blocker }}"{% endif %}>Complete {{ step|upper }} →</button>
+    {% else %}<span class="done">✓ {{ step|upper }} complete</span>{% endif %}
+  </div>
+  {% if blocker %}<p class="muted">Still to do: {{ blocker }}.</p>{% endif %}
+</div>

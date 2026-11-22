@@ -107,3 +107,16 @@ def test_only_the_first_page_of_the_cover_bookmark_is_cover():
     assert kinds[1] == "blank" or kinds[1] == "cover"
     assert kinds[2] == "body" and kinds[3] == "copyright" and kinds[4] == "copyright"
     assert kinds[5] == "toc" and kinds[15] == "body"
+
+
+def test_list_in_a_second_column_is_not_nested_under_the_first():
+    from pdftr.ingest.blocks import assign_list_levels
+
+    q18 = blk(1, "list_item", (70, 400, 330, 430), "Which three partitions?")
+    opt = blk(2, "list_item", (88, 440, 140, 450), "/")
+    q19 = blk(3, "list_item", (366, 230, 630, 260), "Live media is a full system.")
+    true = blk(4, "list_item", (384, 270, 430, 280), "True")
+    q20 = blk(5, "list_item", (70, 600, 330, 620), "Which is not virtualization?")
+    blocks = [q18, opt, q19, true, q20]
+    assign_list_levels(blocks)
+    assert [b.level for b in blocks] == [0, 1, 0, 1, 0]

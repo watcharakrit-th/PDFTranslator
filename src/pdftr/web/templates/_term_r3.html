@@ -1,0 +1,19 @@
+{% set approved = t.review_th == "approved" %}
+{% set base = "/doc/" ~ doc.id ~ "/terms/" ~ t.id %}
+<tr id="term-{{ t.id }}" class="{{ 'approved' if approved }}{{ ' missing' if not t.term_th }}">
+  <td class="term">{{ t.term_en }} <span class="kind">{{ t.kind }}</span></td>
+  <td class="thai">
+    <form hx-post="{{ base }}/thai" hx-trigger="change" hx-target="#term-{{ t.id }}" hx-swap="outerHTML">
+      <input name="term_th" value="{{ t.term_th or '' }}" lang="th" placeholder="คำภาษาไทย…" aria-label="Thai term for {{ t.term_en }}">
+    </form>
+    {% if t.th_source %}<span class="src" title="Where this Thai came from">{{ {"seed": "seed list", "user": "you", "csv": "CSV", "mt": "machine"}.get(t.th_source, t.th_source) }}</span>{% endif %}
+  </td>
+  <td class="num">{{ t.freq or 0 }}</td>
+  <td class="example">{{ t.example|highlight(t.term_en) }}</td>
+  <td>
+    <button class="{{ '' if approved else 'primary' }}" hx-post="{{ base }}/approve"
+            hx-vals='{"step": "r3", "approved": {{ 0 if approved else 1 }}}'
+            hx-target="#term-{{ t.id }}" hx-swap="outerHTML"
+            {% if not t.term_th %}disabled title="Type the Thai term first"{% endif %}>{{ "✓" if approved else "Approve" }}</button>
+  </td>
+</tr>

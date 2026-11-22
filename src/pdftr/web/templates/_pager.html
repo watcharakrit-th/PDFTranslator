@@ -1,0 +1,8 @@
+{% if data.pages > 1 %}
+<nav class="pager" aria-label="Pages">
+  {% for n in range(1, data.pages + 1) %}
+  <a href="?tab={{ tab }}&status={{ status }}&q={{ q }}&p={{ n }}" class="{{ 'on' if n == data.page }}">{{ n }}</a>
+  {% endfor %}
+  <span class="muted">{{ data.total }} terms</span>
+</nav>
+{% elif data.total %}<p class="muted pager">{{ data.total }} terms</p>{% endif %}

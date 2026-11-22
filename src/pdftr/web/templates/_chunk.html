@@ -1,0 +1,55 @@
+{% set approved = c.review_en == "approved" %}
+{% set base = "/doc/" ~ doc.id ~ "/chunks/" ~ c.id %}
+<article class="chunk{% if approved %} approved{% endif %}{% if not c.embed %} skipped{% endif %}{% if c.flagged %} flagged{% endif %}{% if hidden %} hidden{% endif %}"
+         id="chunk-{{ c.id }}" data-chunk="{{ c.id }}">
+  <header>
+    <span class="num">{{ c.n }}</span>
+    <select class="kind" name="kind" aria-label="Kind"
+            hx-post="{{ base }}/kind" hx-vals='{"page": {{ page.page_no }}}'
+            hx-target="#chunk-{{ c.id }}" hx-swap="outerHTML">
+      {% for k in kinds %}<option{% if k == c.kind %} selected{% endif %}>{{ k }}</option>{% endfor %}
+    </select>
+    {% if c.page_start != c.page_end %}<span class="pill" title="Spans pages">p{{ c.page_start }}–{{ c.page_end }}</span>{% endif %}
+    {% if c.part %}<span class="pill">part {{ c.part + 1 }}</span>{% endif %}
+    {% for f in (c.flags + c.block_flags)|unique %}<span class="flag f-{{ f }}" title="{{ flag_help.get(f, f) }}">{{ f|replace("_", " ") }}</span>{% endfor %}
+    <span class="status">{% if approved %}✓ approved{% else %}pending{% endif %}{% if not c.embed %} · not embedded{% endif %}</span>
+  </header>
+  {% if c.context_en %}<div class="context">{{ c.context_en }}</div>{% endif %}
+  {% if c.kind in ("code", "table") %}
+  <pre class="text {{ c.kind }}">{{ c.text_en }}</pre>
+  {% else %}
+  <div class="text">{{ (c.markup_en or c.text_en)|markup }}</div>
+  {% endif %}
+  <div class="actions">
+    <button class="approve{% if not approved %} primary{% endif %}" hx-post="{{ base }}/approve"
+            hx-vals='{"page": {{ page.page_no }}, "approved": {{ 0 if approved else 1 }}}'
+            hx-target="#chunk-{{ c.id }}" hx-swap="outerHTML">{{ "Unapprove" if approved else "✓ Approve" }}</button>
+    <button type="button" onclick="pdftr.toggle('edit-{{ c.id }}')">Edit</button>
+    <button hx-post="{{ base }}/embed" hx-vals='{"page": {{ page.page_no }}, "embed": {{ 1 if not c.embed else 0 }}}'
+            hx-target="#chunk-{{ c.id }}" hx-swap="outerHTML"
+            title="{{ 'Embed this chunk again' if not c.embed else 'Keep it, but do not embed it' }}">{{ "Include" if not c.embed else "Skip" }}</button>
+    <button hx-post="{{ base }}/merge" hx-confirm="Merge this chunk into the chunk before it?"
+            title="Append to the previous chunk">Merge ↑</button>
+    {% if c.split_points %}<button type="button" onclick="pdftr.toggle('split-{{ c.id }}')" title="Split between sentences or blocks">Split ✂</button>{% endif %}
+  </div>
+  <form id="edit-{{ c.id }}" class="editor" hidden
+        hx-post="{{ base }}/edit" hx-vals='{"page": {{ page.page_no }}}'
+        hx-target="#chunk-{{ c.id }}" hx-swap="outerHTML">
+    <textarea name="text" rows="{{ [3, (c.text_en|length // 80) + 2]|max }}" aria-label="Chunk text">{{ c.text_en }}</textarea>
+    <div class="row">
+      <button class="primary">Save</button>
+      <button type="button" onclick="pdftr.toggle('edit-{{ c.id }}')">Cancel</button>
+      <span class="muted">Code and key-term styling is kept where those words are unchanged.</span>
+    </div>
+  </form>
+  {% if c.split_points %}
+  <div id="split-{{ c.id }}" class="splitter" hidden>
+    {% for piece in c.split_points %}
+      {% if not loop.first %}
+      <button class="cut" hx-post="{{ base }}/split" hx-vals='{"at": {{ loop.index0 }}}'>✂ split here</button>
+      {% endif %}
+      <div class="piece">{{ piece|markup }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</article>
