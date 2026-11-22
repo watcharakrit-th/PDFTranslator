@@ -1,0 +1,18 @@
+# environments, caches, generated data (all large, all local)
+.venv/
+.cache/
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# local settings (database password)
+.env
+
+# book content never goes into git: sample PDFs and anything rendered or
+# translated from them
+samples/
+prototype/*.pdf
+prototype/*.png
+prototype/spike_code/*.json
