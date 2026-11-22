@@ -81,6 +81,7 @@ class Chunk:
     blocks: list[Block]
     text: str
     section_path: list[str]
+    markup: str = ""  # same text with <c>/<k>/<b> tags (what M3 translates)
     context: str = ""
     list_level: int | None = None
     part: int = 0

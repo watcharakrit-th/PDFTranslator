@@ -39,7 +39,7 @@ Cutting rules (your answers):
 | Paragraph | One chunk. Never cut in the middle. Parts split by a page or column break are joined. Over ~400 words: split at sentence ends (embedding only). |
 | One-line paragraph | Stays its own chunk. |
 | Bullet / numbered step | Each item is its own chunk, at every nesting level. |
-| Multiple-choice question | The question and its a–d options form one chunk. Options alone mean nothing in search. |
+| Multiple-choice question | The question and its a–d options form one chunk. Options alone mean nothing in search. In quiz sections (Review Questions, Self-Check), a numbered item followed by a./b. options counts as a question even without "?", such as "(Choose three answers.)" items or true/false statements. Lettered steps in a project stay separate. |
 | "Key Terms" list | Kept but not embedded. Each printed line becomes a glossary candidate for R2. |
 | "Label: value" line (e.g. "Estimated Time: 50 minutes") | A paragraph, not a heading, so it never enters the section path. |
 | Heading | Not embedded alone. Becomes the context of the chunks under it. |
@@ -130,7 +130,7 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 | # | Delivers | You can then |
 |---|---|---|
 | M1 ✅ 2026-11-21 | Project skeleton, Docker Postgres, schema, `ingest` (Docling + PyMuPDF), cutter, term candidates | Ingest a book and inspect chunks in the DB |
-| M2 | Review web page: R1, R2, R3 | Review chunks and terms |
+| M2 ✅ 2026-11-22 | Review web page: R1, R2, R3 | Review chunks and terms |
 | M3 | Typhoon engine, translation memory, R4 with Thai page preview | Get a fully translated, reviewed book |
 | M4 | Full-book renderer, side-by-side + alternate layouts, bookmarks, text-layer fix | Read the bilingual PDF |
 | M5 | BGE-M3 embedding, R5, `search` | Search your books in Thai or English |
@@ -153,6 +153,26 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 - **Missed lines:** Docling sometimes misses the first lines at the top of a page. These are kept as paragraphs flagged `orphan`, put in reading order by position, and joined to the previous page's unfinished sentence (9 such joins). R1 shows these flags.
 - **Noisy phrases:** phrase-frequency terms ("press enter") are noisy. The R2 page will show them apart from styled terms, Key Terms entries and acronyms.
 
-## 13. Open items
+## 13. M2 results
+
+- **Review page:** `pdftr review`, built with FastAPI and htmx, with no build step. It listens on localhost only, and actions must come from the page itself.
+  - **R1 (English chunks):** the page image with chunk boxes. You can approve, edit, skip, change the kind, merge or split a chunk, approve a page, chapter or the whole book, and filter to pending or flagged chunks.
+  - **R2 (English terms):** tabs by source and a Keep English / Translate / Not a term decision for each term.
+  - **R3 (Thai terms):** a Thai field for each term marked Translate.
+  - **Order:** each step unlocks when the previous one is complete, and every action is written to a review log.
+- **Chunk markup:** chunks keep their tagged text (`markup_en`). That way an edit keeps code and key-term styling, and M3 can translate chunks with their styling.
+- **Seed glossary:** about 190 common IT terms with established Thai words. They give the first-draft decisions:
+
+| Kind of term | First draft |
+|---|---|
+| Command | Keep English, approved automatically |
+| Term in the seed list | Translate, with its Thai filled in |
+| Acronym or other term | Keep English |
+| Phrase found only by frequency | Not a term |
+
+  For CompTIA pages 1–100 that gives 68 Translate, 346 Keep English, 150 Not a term and 32 commands. Everything is reviewable in R2 and R3, and the glossary moves in and out as CSV.
+- **Cutting fixes:** structural question detection merged 56 stray answer options into their questions, leaving 931 chunks and 58 multiple-choice questions. Two-column question lists no longer nest under each other.
+
+## 14. Open items
 
 - The third sample (*The Comprehensive DevOps Interview Guide*) is **damaged**. It was opened and saved as text, which replaced 5.3 million bytes with "�". Please copy it again from the original source using File Explorer, and don't open it in VS Code.

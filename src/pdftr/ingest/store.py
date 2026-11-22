@@ -81,7 +81,7 @@ def save_blocks(conn: psycopg.Connection, doc_id: int, blocks: list[Block]) -> N
                     *b.bbox,
                     b.markup,
                     b.text,
-                    Jsonb(b.style),
+                    Jsonb(b.style | ({"marker": b.marker} if b.marker else {})),
                     b.translate,
                     b.flags,
                 ),
@@ -93,8 +93,9 @@ def save_chunks(conn: psycopg.Connection, doc_id: int, chunks: list[Chunk]) -> N
     with conn.cursor() as cur:
         cur.executemany(
             """INSERT INTO chunks (doc_id, ord, part, kind, section_path, context_en, text_en,
-                                  block_ids, page_start, page_end, list_level, embed, flags)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                  markup_en, block_ids, page_start, page_end, list_level,
+                                  embed, flags)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             [
                 (
                     doc_id,
@@ -104,6 +105,7 @@ def save_chunks(conn: psycopg.Connection, doc_id: int, chunks: list[Chunk]) -> N
                     c.section_path,
                     c.context,
                     c.text,
+                    c.markup,
                     [b.db_id for b in c.blocks],
                     c.page_start,
                     c.page_end,
@@ -116,21 +118,15 @@ def save_chunks(conn: psycopg.Connection, doc_id: int, chunks: list[Chunk]) -> N
         )
 
 
-DEFAULTS_BY_KIND = {
-    # (decision, review_en): commands are plainly English and need no review
-    "code": ("keep_en", "approved"),
-    "acronym": ("keep_en", "pending"),
-    "term": ("undecided", "pending"),
-}
-
-
 def save_terms(conn: psycopg.Connection, doc_id: int, terms: list[TermCandidate]) -> None:
+    from pdftr.glossary import default_for
+
     with conn.cursor() as cur:
         for t in terms:
-            decision, review = DEFAULTS_BY_KIND.get(t.kind, ("undecided", "pending"))
+            d = default_for(t.norm, t.kind, t.sources)
             cur.execute(
-                """INSERT INTO terms (norm, term_en, kind, decision, review_en)
-                   VALUES (%s, %s, %s, %s, %s)
+                """INSERT INTO terms (norm, term_en, kind, decision, review_en, term_th, th_source)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (norm) DO UPDATE SET
                      -- refresh only what nobody has reviewed or entered by hand
                      term_en = CASE WHEN terms.source = 'auto' AND terms.review_en = 'pending'
@@ -139,7 +135,15 @@ def save_terms(conn: psycopg.Connection, doc_id: int, terms: list[TermCandidate]
                                     THEN EXCLUDED.kind ELSE terms.kind END,
                      updated_at = now()
                    RETURNING id""",
-                (t.norm, t.term, t.kind, decision, review),
+                (
+                    t.norm,
+                    t.term,
+                    t.kind,
+                    d["decision"],
+                    d["review_en"],
+                    d["term_th"],
+                    d["th_source"],
+                ),
             )
             term_id = cur.fetchone()["id"]
             cur.execute(

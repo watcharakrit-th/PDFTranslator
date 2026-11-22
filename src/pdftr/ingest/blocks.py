@@ -359,7 +359,11 @@ def assign_heading_levels(blocks: list[Block], outline: list[list]) -> None:
 
 
 def assign_list_levels(blocks: list[Block]) -> None:
-    """List nesting depth from indentation within each run of list items."""
+    """List nesting depth from indentation within each run of list items.
+
+    Nesting steps are small (~18 pt); a jump of more than 100 pt is a move to
+    another column (two-column review questions), which starts a new list.
+    """
     stack: list[float] = []
     for b in blocks:
         if b.role != "list_item":
@@ -367,7 +371,7 @@ def assign_list_levels(blocks: list[Block]) -> None:
                 stack = []
             continue
         x = b.bbox[0]
-        if not stack:
+        if not stack or abs(x - stack[-1]) > 100:
             stack = [x]
         elif x > stack[-1] + 6:
             stack.append(x)

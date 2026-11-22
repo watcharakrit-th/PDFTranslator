@@ -136,3 +136,60 @@ def test_caption_between_page_parts_does_not_break_paragraph():
     )
     texts = [c.text for c in chunks]
     assert "Linux distributions differ in their default software." in texts
+
+
+def test_paragraph_after_question_options_is_not_joined_to_them():
+    chunks = run(
+        [
+            blk(1, "list_item", "What runs the kernel?", level=0, marker="1."),
+            blk(1, "list_item", "Boot loader", level=1, marker="a."),
+            blk(2, "paragraph", "next, the kernel loads its modules."),
+        ]
+    )
+    assert [c.text for c in chunks] == [
+        "What runs the kernel?\na. Boot loader",
+        "next, the kernel loads its modules.",
+    ]
+
+
+def test_review_question_without_question_mark_keeps_its_options():
+    chunks = run(
+        [
+            blk(1, "heading", "Review Questions", level=2),
+            blk(
+                1,
+                "list_item",
+                "Which three partitions are created? (Choose three answers.)",
+                level=0,
+                marker="18.",
+            ),
+            blk(1, "list_item", "/", level=1, marker="a."),
+            blk(1, "list_item", "/boot", level=1, marker="b."),
+            blk(
+                1,
+                "list_item",
+                "Live media gives a full Linux system before installing.",
+                level=0,
+                marker="19.",
+            ),
+            blk(1, "list_item", "True", level=1, marker="a."),
+            blk(1, "list_item", "False", level=1, marker="b."),
+        ]
+    )
+    assert [(c.kind, c.text) for c in chunks] == [
+        ("question", "Which three partitions are created? (Choose three answers.)\na. /\nb. /boot"),
+        ("question", "Live media gives a full Linux system before installing.\na. True\nb. False"),
+    ]
+    assert "Question:" not in chunks[1].context
+
+
+def test_lettered_steps_in_a_project_stay_separate():
+    chunks = run(
+        [
+            blk(1, "heading", "Project 2-1", level=3),
+            blk(1, "list_item", "Install these packages:", level=0, marker="3."),
+            blk(1, "list_item", "gcc", level=1, marker="a."),
+            blk(1, "list_item", "make", level=1, marker="b."),
+        ]
+    )
+    assert [c.text for c in chunks] == ["Install these packages:", "gcc", "make"]

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="index">
+  <h1>Documents</h1>
+  {% if not docs %}
+  <p class="empty">No documents yet. Ingest one first:
+    <code>pdftr ingest book.pdf --pages 1-100</code></p>
+  {% endif %}
+  {% for d in docs %}
+  <article class="doccard">
+    <h2><a href="/doc/{{ d.id }}">{{ d.title or d.file_name }}</a></h2>
+    <p class="muted">{{ d.file_name }} · {{ d.page_count }} pages ·
+      ingested {{ d.pages_in }} ({{ d.first_page }}–{{ d.last_page }})</p>
+    <ol class="steplist">
+      {% for s in d.steps %}<li class="{{ s.state }}">{{ s.label }}</li>{% endfor %}
+    </ol>
+    <div class="progress">
+      <div class="bar"><span style="width: {{ d.r1.percent }}%"></span></div>
+      <span>R1: {{ d.r1.approved }} / {{ d.r1.total }} chunks approved</span>
+    </div>
+    <a class="btn primary" href="/doc/{{ d.id }}">Continue review →</a>
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}
