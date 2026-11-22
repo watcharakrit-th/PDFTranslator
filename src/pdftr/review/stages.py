@@ -22,7 +22,7 @@ STEPS = [
     ("r1", "r1_chunks_en", "R1 English chunks", True),
     ("r2", "r2_terms_en", "R2 English terms", True),
     ("r3", "r3_terms_th", "R3 Thai terms", True),
-    ("r4", "r4_chunks_th", "R4 Thai chunks", False),
+    ("r4", "r4_chunks_th", "R4 Thai chunks", True),
     ("r5", "r5_embed", "R5 Embedding", False),
 ]
 STEP_STAGE = {s: stage for s, stage, _, _ in STEPS}
@@ -34,6 +34,8 @@ def step_states(stage: str) -> list[dict]:
     for step, st, label, built in STEPS:
         i = STAGES.index(st)
         state = "done" if i < current else "current" if i == current else "locked"
+        if stage == "translate" and st == "r4_chunks_th":
+            state = "current"  # R4 opens while the translation runs (it shows how far it is)
         if not built and state != "done":
             state = "later"
         out.append({"step": step, "label": label, "state": state})
@@ -65,6 +67,16 @@ def blockers(conn: psycopg.Connection, doc_id: int, step: str) -> str | None:
         if row["missing"]:
             return f"{row['missing']} terms to translate have no Thai yet"
         return f"{row['pending']} Thai terms still pending" if row["pending"] else None
+    if step == "r4":
+        row = conn.execute(
+            """SELECT count(*) FILTER (WHERE text_th IS NULL) AS missing,
+                      count(*) FILTER (WHERE review_th = 'pending') AS pending
+               FROM chunks WHERE doc_id=%s""",
+            (doc_id,),
+        ).fetchone()
+        if row["missing"]:
+            return f"{row['missing']} chunks are not translated yet"
+        return f"{row['pending']} Thai chunks still pending" if row["pending"] else None
     raise ReviewError(f"Unknown step {step}")
 
 
@@ -74,6 +86,8 @@ def complete(conn: psycopg.Connection, doc_id: int, step: str) -> str:
     if doc is None:
         raise ReviewError(f"Document {doc_id} not found.")
     stage = STEP_STAGE.get(step)
+    if step == "r4" and doc["stage"] == "translate":
+        raise ReviewError(f"The translation has not finished: run `pdftr translate {doc_id}`.")
     if doc["stage"] != stage:
         raise ReviewError(f"{step.upper()} is not the current step.")
     reason = blockers(conn, doc_id, step)

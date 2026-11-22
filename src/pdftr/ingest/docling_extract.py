@@ -75,7 +75,7 @@ def extract_items(
                 result = converter.convert(str(pdf_path), page_range=(a, b))
             log(
                 f"  layout {i}/{len(batches)}: pages {a}-{b} in "
-                f"{time.monotonic() - started:.1f}s, GPU peak {watch['peak_c']}°C"
+                f"{time.monotonic() - started:.1f}s, GPU hot spot peak {watch.peak_c}°C"
             )
             batch = _items_from(result.document)
             if cache_file:

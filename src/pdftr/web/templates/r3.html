@@ -10,6 +10,13 @@
       After this step the glossary is final and the book is translated with it.</p>
   </header>
   {% include "_terms_toolbar.html" %}
+  {% if step_state == "current" %}
+  <div class="row addrow">
+    <button hx-post="/doc/{{ doc.id }}/terms/suggest-thai" hx-indicator="#suggest-busy"
+            hx-confirm="Ask the translator for Thai suggestions for terms that have none? It uses the GPU briefly; you still approve each suggestion.">Suggest missing Thai (machine)</button>
+    <span id="suggest-busy" class="htmx-indicator muted">asking the translator…</span>
+  </div>
+  {% endif %}
   <table class="termtable">
     <thead><tr><th>English</th><th>Thai</th><th class="num">Uses</th><th>Example</th><th></th></tr></thead>
     <tbody>

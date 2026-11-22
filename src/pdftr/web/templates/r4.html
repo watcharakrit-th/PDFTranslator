@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}R4 · p{{ page.page_no }} · {{ doc.title or doc.file_name }}{% endblock %}
+{% block content %}
+<div class="r1 r4" data-doc="{{ doc.id }}">
+  <section class="pane page-pane" aria-label="Page">
+    <nav class="pagenav">
+      {% if prev_page %}<a class="btn" id="prev-page" href="?page={{ prev_page }}&only={{ only }}&view={{ view }}" title="Previous page (p)">◀</a>
+      {% else %}<span class="btn" aria-disabled="true">◀</span>{% endif %}
+      <form method="get" class="goto">
+        <label>Page <input name="page" value="{{ page.page_no }}" size="4" inputmode="numeric"></label>
+        <input type="hidden" name="only" value="{{ only }}"><input type="hidden" name="view" value="{{ view }}">
+      </form>
+      {% if next_page %}<a class="btn" id="next-page" href="?page={{ next_page }}&only={{ only }}&view={{ view }}" title="Next page (n)">▶</a>
+      {% else %}<span class="btn" aria-disabled="true">▶</span>{% endif %}
+      <span class="seg" role="group" aria-label="Page view">
+        <a class="btn {{ 'on' if view == 'thai' }}" href="?page={{ page.page_no }}&only={{ only }}&view=thai">Thai page</a>
+        <a class="btn {{ 'on' if view == 'english' }}" href="?page={{ page.page_no }}&only={{ only }}&view=english">English page</a>
+      </span>
+      <span class="spacer"></span>
+      {% if next_flagged %}<a class="btn warn" id="next-flagged" href="?page={{ next_flagged }}&only={{ only }}&view={{ view }}" title="Next page with flagged Thai still pending (f)">⚑ Next flagged · {{ n_flagged_pages }} pages</a>{% endif %}
+      {% if next_pending %}<a class="btn" href="?page={{ next_pending }}&only={{ only }}&view={{ view }}">Next pending</a>{% endif %}
+    </nav>
+    <select class="chapters" aria-label="Chapter" onchange="location.href='?page=' + this.value + '&only={{ only }}&view={{ view }}'">
+      {% for ch in chapters %}
+      <option value="{{ ch.first_page }}" {% if ch.title == current_chapter %}selected{% endif %}>{{ ch.title }} · {{ ch.pending }} pending</option>
+      {% endfor %}
+    </select>
+    <div class="pageimg" style="aspect-ratio: {{ page.width }} / {{ page.height }}">
+      {% if view == "thai" %}
+      <img src="/doc/{{ doc.id }}/page/{{ page.page_no }}/thai.png?v={{ preview_version }}" alt="Thai page {{ page.page_no }}">
+      {% else %}
+      <img src="/doc/{{ doc.id }}/page/{{ page.page_no }}.png" alt="Page {{ page.page_no }}">
+      {% endif %}
+      {% for b in blocks %}{% if b.chunk_id %}
+      <div class="box role-{{ b.role }} has-chunk thin"
+           style="left:{{ pct(b.x0, page.width) }}%;top:{{ pct(b.y0, page.height) }}%;width:{{ pct(b.x1 - b.x0, page.width) }}%;height:{{ pct(b.y1 - b.y0, page.height) }}%"
+           data-chunk="{{ b.chunk_id }}"><span class="tag">{{ b.n }}</span></div>
+      {% endif %}{% endfor %}
+    </div>
+    <p class="legend">The Thai page is a preview of the bilingual PDF's right side. Headings, running headers and table cells are translated too; only chunks are reviewed here.</p>
+  </section>
+
+  <section class="pane chunk-pane" aria-label="Thai chunks">
+    <div class="toolbar">
+      {% include "_progress_th.html" %}
+      {% if prog.missing %}
+      <p class="banner">{{ prog.missing }} chunks have no Thai yet. Translate the book with
+        <code>pdftr translate {{ doc.id }}</code> (it keeps the GPU cool and can be stopped and resumed).</p>
+      {% endif %}
+      <div class="row">
+        <span class="filters">Show
+          <a href="?page={{ page.page_no }}&only=all&view={{ view }}" class="{{ 'on' if only == 'all' }}">all</a>
+          <a href="?page={{ page.page_no }}&only=pending&view={{ view }}" class="{{ 'on' if only == 'pending' }}">pending</a>
+          <a href="?page={{ page.page_no }}&only=flagged&view={{ view }}" class="{{ 'on' if only == 'flagged' }}">flagged</a>
+        </span>
+        <span class="spacer"></span>
+        <button hx-post="/doc/{{ doc.id }}/r4/approve-page" hx-vals='{"page": {{ page.page_no }}}' id="approve-page" title="Approve the Thai of every chunk on this page (Shift+A)">Approve page</button>
+        <button hx-post="/doc/{{ doc.id }}/r4/approve-chapter" hx-vals='{"page": {{ page.page_no }}}'
+                hx-confirm="Approve the Thai of every pending chunk in “{{ current_chapter }}”?">Approve chapter</button>
+        <button hx-post="/doc/{{ doc.id }}/r4/approve-all" hx-confirm="Approve ALL pending Thai chunks in this book?">Approve all</button>
+      </div>
+    </div>
+    <div id="chunks">
+      {% for c in chunks %}
+        {% set hidden = (only == "pending" and c.review_th != "pending") or (only == "flagged" and not c.th_flagged) %}
+        {% include "_chunk_th.html" %}
+      {% else %}
+        <p class="empty">No chunks on this page{% if page.kind != "body" %} ({{ page.kind }} page){% endif %}.</p>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+{% endblock %}

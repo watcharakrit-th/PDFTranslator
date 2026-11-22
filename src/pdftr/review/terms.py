@@ -250,3 +250,40 @@ def approve_th(
         ids=term_ids[:500],
     )
     return n
+
+
+def suggest_thai(
+    conn: psycopg.Connection, doc_id: int, engine, limit: int = 100
+) -> tuple[int, str | None]:
+    """Machine suggestions for terms to translate that have no Thai yet.
+
+    They are marked as machine-made and stay pending: you still approve each one.
+    Returns (terms suggested, reason if the GPU guard stopped the series early).
+    """
+    from pdftr.gpu import GpuTooHot
+    from pdftr.translate.rules import STYLE_RULE
+
+    rows = conn.execute(
+        """SELECT t.id, t.term_en FROM doc_terms dt JOIN terms t ON t.id = dt.term_id
+           WHERE dt.doc_id=%s AND t.decision='translate' AND coalesce(t.term_th, '') = ''
+           ORDER BY dt.freq DESC LIMIT %s""",
+        (doc_id, limit),
+    ).fetchall()
+    rules = [STYLE_RULE, "This is a technical term: return only its Thai equivalent."]
+    done, stopped = 0, None
+    for r in rows:
+        try:
+            answer = engine.translate(r["term_en"], rules).text
+        except GpuTooHot as exc:
+            stopped = str(exc)
+            break
+        thai = (answer.splitlines() or [""])[0].strip(" .\"'")
+        if thai:
+            conn.execute(
+                "UPDATE terms SET term_th=%s, th_source='mt', review_th='pending', "
+                "updated_at=now() WHERE id=%s",
+                (thai, r["id"]),
+            )
+        done += 1
+    log(conn, doc_id, "r3", "suggest", f"terms:{done}")
+    return done, stopped

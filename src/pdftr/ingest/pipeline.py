@@ -123,12 +123,10 @@ def _run(
     t_start = time.monotonic()
 
     # 1) layout analysis (GPU, small batches, temperature checkpoints)
-    guard = GpuGuard(
-        settings.gpu_pause_at_c, settings.gpu_resume_at_c, settings.gpu_cooldown_s, log=log
-    )
+    guard = GpuGuard.from_settings(settings, log=log)
     log(
         f"Layout analysis: pages {first}-{last} in batches of {settings.docling_batch_pages} "
-        f"(pause at {settings.gpu_pause_at_c}°C)"
+        f"(GPU hot spot: pause at {settings.gpu_pause_at_c}°C)"
     )
     cache_dir = settings.data_dir / "layout_cache" / file_hash[:16]
     items = extract_items(pdf_path, first, last, settings, guard, log, cache_dir=cache_dir)
@@ -242,7 +240,7 @@ def _run(
         "seconds_layout": round(t_layout - t_start, 1),
         "seconds_cut_terms": round(t_cut - t_layout, 1),
         "seconds_total": round(time.monotonic() - t_start, 1),
-        "gpu_peak_c": guard.peak_c,
+        "gpu_peak_hotspot_c": guard.peak_c,
         "gpu_paused_s": round(guard.paused_s),
         "dump": str(dump),
     }

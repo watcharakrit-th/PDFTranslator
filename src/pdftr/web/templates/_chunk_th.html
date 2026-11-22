@@ -1,0 +1,46 @@
+{% set approved = c.review_th == "approved" %}
+{% set base = "/doc/" ~ doc.id ~ "/chunks/" ~ c.id ~ "/th" %}
+{% set editable = c.text_th is not none and c.kind not in ("code", "table") %}
+<article class="chunk{% if approved %} approved{% endif %}{% if c.th_flagged and not approved %} flagged{% endif %}{% if hidden %} hidden{% endif %}"
+         id="chunk-{{ c.id }}" data-chunk="{{ c.id }}">
+  <header>
+    <span class="num">{{ c.n }}</span>
+    <span class="pill">{{ c.kind|replace("_", " ") }}</span>
+    {% if c.tr_source %}<span class="pill src-{{ c.tr_source }}" title="Where this Thai came from">{{ source_label.get(c.tr_source, c.tr_source) }}</span>{% endif %}
+    {% for f in c.tr_flags %}<span class="flag" title="{{ tr_flag_help.get(f, f) }}">{{ f|replace("_", " ") }}</span>{% endfor %}
+    {% if c.overflow %}<span class="flag" title="Even at 60% size the Thai does not fit where the English was: shorten it">does not fit</span>
+    {% elif c.shrunk %}<span class="flag soft" title="Drawn smaller than the English to fit">shrunk</span>{% endif %}
+    <span class="status">{% if approved %}✓ approved{% elif c.text_th is none %}not translated{% else %}pending{% endif %}</span>
+  </header>
+  {% if c.kind in ("code", "table") %}
+  <pre class="text {{ c.kind }}">{{ c.text_th if c.text_th is not none else c.text_en }}</pre>
+  {% else %}
+  <div class="en" lang="en">{{ (c.markup_en or c.text_en)|markup }}</div>
+  {% if c.text_th is none %}<p class="muted">Not translated yet.</p>
+  {% else %}<div class="text th" lang="th">{{ (c.markup_th or c.text_th)|markup }}</div>{% endif %}
+  {% if c.glossary_issues %}<p class="issues">Glossary: {{ c.glossary_issues|join(" · ") }}</p>{% endif %}
+  {% endif %}
+  <div class="actions">
+    {% if c.text_th is not none %}
+    <button class="approve{% if not approved %} primary{% endif %}" hx-post="{{ base }}/approve"
+            hx-vals='{"page": {{ page.page_no }}, "approved": {{ 0 if approved else 1 }}}'
+            hx-target="#chunk-{{ c.id }}" hx-swap="outerHTML">{{ "Unapprove" if approved else "✓ Approve" }}</button>
+    {% endif %}
+    {% if editable %}<button type="button" onclick="pdftr.toggle('edit-{{ c.id }}')">Edit Thai</button>{% endif %}
+    {% if c.kind not in ("code", "table") and "mcq" not in c.flags %}
+    <button hx-post="{{ base }}/retranslate" hx-indicator="#busy-{{ c.id }}"
+            title="Ask the translator again (uses the GPU for a few seconds)">Re-translate</button>
+    <span id="busy-{{ c.id }}" class="htmx-indicator muted">translating…</span>
+    {% endif %}
+  </div>
+  {% if editable %}
+  <form id="edit-{{ c.id }}" class="editor" hidden hx-post="{{ base }}/edit">
+    <textarea name="text" lang="th" rows="{{ [3, (c.text_th|length // 60) + 2]|max }}" aria-label="Thai text">{{ c.text_th }}</textarea>
+    <div class="row">
+      <button class="primary">Save</button>
+      <button type="button" onclick="pdftr.toggle('edit-{{ c.id }}')">Cancel</button>
+      <span class="muted">{% if "mcq" in c.flags %}Keep one line for the question and one per option. {% endif %}Saving approves it and reuses your Thai wherever this English appears again.</span>
+    </div>
+  </form>
+  {% endif %}
+</article>

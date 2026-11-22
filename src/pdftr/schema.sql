@@ -143,3 +143,14 @@ CREATE TABLE IF NOT EXISTS review_log (
     at      timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS review_log_doc_idx ON review_log (doc_id, at);
+
+-- v3 (M3): translation. Thai markup, checks and provenance per chunk and block.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS markup_th     text;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tr_flags      text[] NOT NULL DEFAULT '{}';
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tr_source     text;    -- copy|tm|mt|human
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tr_key        text;    -- source + rules + engine hash
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS translated_at timestamptz;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS cells_th      jsonb;   -- table cells: {"row,col": thai}
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS tr_flags      text[] NOT NULL DEFAULT '{}';
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS tr_source     text;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS tr_key        text;

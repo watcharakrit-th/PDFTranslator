@@ -58,7 +58,64 @@ def _block(page, seq, role, markup, marker=None, level=None):
 
 
 @pytest.fixture
-def sample_doc(conn):
+def sample_pdf(tmp_path):
+    """A real two-page PDF for the sample document (the Thai preview needs one)."""
+    import pymupdf
+
+    pdf = pymupdf.open()
+    for page_no in (1, 2):
+        page = pdf.new_page(width=612, height=792)
+        page.insert_text((50, 60), f"Sample page {page_no}", fontsize=10)
+    path = tmp_path / "sample.pdf"
+    pdf.save(path)
+    return str(path)
+
+
+class FakeEngine:
+    """Deterministic stand-in for the translator: follows the glossary rules, keeps
+    placeholders, and turns every other English word into Thai letters."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def translate(self, text, rules, *, retry=False, stop=None):
+        import re
+
+        from pdftr.translate.engine import Result
+
+        self.calls += 1
+        joined = "\n".join(rules)
+        stash: dict[str, str] = {}
+
+        def keep(value: str) -> str:
+            key = f"@{len(stash)}@"
+            stash[key] = value
+            return key
+
+        out = text
+        for en, th in re.findall(r'Translate "(.+?)" as "(.+?)"', joined):
+            out = re.sub(
+                re.escape(en) + r"s?", lambda _m, th=th: keep(th), out, flags=re.IGNORECASE
+            )
+        for en in re.findall(r'Keep "(.+?)" in English', joined):
+            out = re.sub(
+                re.escape(en) + r"s?", lambda m: keep(m.group(0)), out, flags=re.IGNORECASE
+            )
+        out = re.sub(r"[A-Za-z]+", lambda m: "ก" * len(m.group(0)), out)
+        for key, value in stash.items():
+            out = out.replace(key, value)
+        return Result(out, 0.01, 10)
+
+
+@pytest.fixture
+def fake_engine():
+    return FakeEngine()
+
+
+@pytest.fixture
+def sample_doc(conn, sample_pdf):
     """A two-page document: a paragraph that runs across the page break, a
     multiple-choice question, and a three-sentence paragraph. Returns doc id."""
     blocks = [
@@ -78,7 +135,7 @@ def sample_doc(conn):
         conn,
         file_hash="x" * 64,
         file_name="sample.pdf",
-        file_path="sample.pdf",
+        file_path=sample_pdf,
         title="Sample",
         page_count=2,
     )

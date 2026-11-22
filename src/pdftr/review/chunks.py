@@ -135,12 +135,14 @@ def pending_pages(conn: psycopg.Connection, doc_id: int) -> list[int]:
     return [r["p"] for r in rows]
 
 
-def chapters(conn: psycopg.Connection, doc_id: int) -> list[dict]:
+def chapters(conn: psycopg.Connection, doc_id: int, review_col: str = "review_en") -> list[dict]:
+    if review_col not in ("review_en", "review_th"):
+        raise ValueError(review_col)
     return conn.execute(
-        """SELECT coalesce(section_path[1], '(front matter)') AS title,
-                  min(page_start) AS first_page, count(*) AS chunks,
-                  count(*) FILTER (WHERE review_en = 'pending') AS pending
-           FROM chunks WHERE doc_id = %s GROUP BY 1 ORDER BY 2""",
+        f"""SELECT coalesce(section_path[1], '(front matter)') AS title,
+                   min(page_start) AS first_page, count(*) AS chunks,
+                   count(*) FILTER (WHERE {review_col} = 'pending') AS pending
+            FROM chunks WHERE doc_id = %s GROUP BY 1 ORDER BY 2""",
         (doc_id,),
     ).fetchall()
 

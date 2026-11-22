@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -23,10 +24,8 @@ console = Console()
 def _setup() -> None:
     # Thai and box-drawing characters on the Windows console
     for stream in (sys.stdout, sys.stderr):
-        try:
+        with contextlib.suppress(AttributeError, OSError, ValueError):
             stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
 
 
 def parse_pages(spec: str | None) -> tuple[int, int]:
@@ -72,16 +71,20 @@ def db_status() -> None:
 def gpu() -> None:
     """Show GPU temperature and load."""
     from pdftr.gpu import GpuGuard
+    from pdftr.settings import get_settings
 
-    status = GpuGuard().status()
+    guard = GpuGuard.from_settings(get_settings(), log=console.print)
+    status = guard.status()
     if status is None:
         console.print("No NVIDIA GPU visible")
         return
+    hot = f"{status.hotspot_c}°C" if status.hotspot_c is not None else "not readable"
     console.print(
-        f"{status.temperature_c}°C, load {status.utilization_pct}%, "
-        f"{status.power_w:.0f} W, fan {status.fan_pct}%, "
+        f"hot spot {hot}, core {status.temperature_c}°C, load {status.utilization_pct}%, "
+        f"{status.power_w:.0f} W (limit {status.power_limit_w:.0f} W), fan {status.fan_pct}%, "
         f"VRAM {status.memory_used_mb}/{status.memory_total_mb} MB"
     )
+    console.print(guard.describe())
 
 
 # --------------------------------------------------------------------------- ingest
@@ -364,3 +367,145 @@ def glossary_seed() -> None:
     with connect() as conn:
         n = apply_seed(conn)
     console.print(f"Re-applied defaults to {n} unreviewed terms")
+
+
+# ---------------------------------------------------------------------- translation
+ollama_app = typer.Typer(no_args_is_help=True, help="The local translation server (Ollama).")
+app.add_typer(ollama_app, name="ollama")
+
+
+@ollama_app.command("status")
+def ollama_status() -> None:
+    """Is Ollama running, and is the translation model installed?"""
+    from pdftr.settings import get_settings
+    from pdftr.translate.ollama import OllamaClient
+
+    s = get_settings()
+    client = OllamaClient(s.ollama_url)
+    if not client.alive():
+        console.print(f"Ollama is not running at {s.ollama_url} (pdftr starts it when needed)")
+        return
+    installed = client.has_model(s.translate_model)
+    console.print(
+        f"Ollama {client.version()} at {s.ollama_url}; model {s.translate_model}: "
+        + ("installed" if installed else "missing (run: pdftr ollama pull)")
+    )
+
+
+@ollama_app.command("pull")
+def ollama_pull() -> None:
+    """Download the translation model (about 2.5 GB, into .cache/ollama)."""
+    from pdftr.settings import configure_environment, get_settings
+    from pdftr.translate.ollama import OllamaServer
+
+    s = get_settings()
+    configure_environment(s)
+    with OllamaServer(s, log=console.print) as client:
+        client.pull(s.translate_model, progress=lambda msg: console.print(f"  {msg}"))
+
+
+@app.command()
+def translate(
+    doc_id: int,
+    pages: str = typer.Option(
+        None, "--pages", "-p", help="Only these pages, e.g. 15-24 (also works before R3)"
+    ),
+    force: bool = typer.Option(False, help="Translate again even where nothing changed"),
+) -> None:
+    """Translate a document after R3. Resumable (Ctrl+C keeps what is done); keeps the GPU cool."""
+    from pdftr.db import connect, init_schema
+    from pdftr.gpu import GpuGuard, GpuTooHot
+    from pdftr.settings import configure_environment, get_settings
+    from pdftr.translate.engine import make_engine
+    from pdftr.translate.ollama import OllamaServer
+    from pdftr.translate.runner import translate_document
+
+    s = get_settings()
+    configure_environment(s)
+    first, last = parse_pages(pages)
+    with connect() as conn:
+        init_schema(conn)
+        doc = conn.execute("SELECT stage FROM documents WHERE id=%s", (doc_id,)).fetchone()
+        if doc is None:
+            console.print(f"[red]No document {doc_id}[/]")
+            raise typer.Exit(1)
+        before_r3 = doc["stage"] in ("r1_chunks_en", "r2_terms_en", "r3_terms_th")
+        if before_r3 and not pages:
+            console.print(
+                "[yellow]Finish R1–R3 first[/] so the glossary is final, or try a "
+                "few pages now with --pages 15-24."
+            )
+            raise typer.Exit(1)
+        if before_r3:
+            console.print(
+                "[yellow]Preview:[/] the glossary is not final yet. Pages translated "
+                "now are re-translated automatically where the glossary changes."
+            )
+        guard = GpuGuard.from_settings(s, log=console.print)
+        if not guard.available:
+            console.print("[red]Cannot read the GPU temperature[/], so translation will not run.")
+            raise typer.Exit(1)
+        console.print(guard.describe())
+        try:
+            with OllamaServer(s, log=console.print) as client:
+                if not client.has_model(s.translate_model):
+                    console.print("Downloading the translation model (about 2.5 GB)...")
+                    client.pull(s.translate_model, progress=lambda _msg: None)
+                engine = make_engine(s, client, guard)
+                try:
+                    summary = translate_document(
+                        conn,
+                        doc_id,
+                        engine,
+                        first=first,
+                        last=last,
+                        force=force,
+                        guard=guard,
+                        log=console.print,
+                    )
+                finally:
+                    client.unload(s.translate_model)  # free the GPU now
+        except KeyboardInterrupt:
+            console.print(
+                "[yellow]Stopped.[/] Finished pieces are saved; run the same "
+                "command again to continue."
+            )
+            raise typer.Exit(130) from None
+        except GpuTooHot as exc:
+            console.print(
+                f"[red]Stopped to protect the GPU:[/] {exc}, even on a short piece after "
+                "cooling down. Finished pieces are saved. Lower the GPU power limit "
+                "(README: GPU safety) before running again."
+            )
+            raise typer.Exit(3) from None
+    table = Table("item", "value", show_header=False)
+    for key, value in summary.items():
+        table.add_row(key, str(value))
+    console.print(table)
+
+
+@app.command("render-page")
+def render_page(doc_id: int, page: int) -> None:
+    """Draw the Thai version of one page (PNG + PDF in data/doc_<id>/thai/)."""
+    from pdftr.db import connect
+    from pdftr.render.preview import page_blocks
+    from pdftr.render.thai_page import render_thai_page
+    from pdftr.settings import configure_environment, get_settings
+
+    s = get_settings()
+    configure_environment(s)
+    with connect() as conn:
+        doc = conn.execute("SELECT file_path FROM documents WHERE id=%s", (doc_id,)).fetchone()
+        blocks = page_blocks(conn, doc_id, page)
+    rendered, fits = render_thai_page(doc["file_path"], page, blocks)
+    out = s.data_dir / f"doc_{doc_id}" / "thai"
+    out.mkdir(parents=True, exist_ok=True)
+    pdf_path, png_path = out / f"page{page:04d}.pdf", out / f"page{page:04d}.png"
+    rendered.save(pdf_path, garbage=3, deflate=True)
+    rendered[0].get_pixmap(dpi=130).save(png_path)
+    shrunk = sum(1 for f in fits if f.scale < 1 and not f.overflow)
+    overflow = sum(1 for f in fits if f.overflow)
+    console.print(
+        f"Wrote {png_path} and {pdf_path}: {len(fits)} text areas, "
+        f"{shrunk} shrunk to fit, {overflow} do not fit"
+    )

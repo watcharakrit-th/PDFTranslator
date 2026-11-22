@@ -78,8 +78,8 @@ def assign_lines(
             continue
         best = min(hits, key=lambda i: _area(items[i].bbox))
         owned[best].append(line)
-    for i in owned:
-        owned[i] = sort_lines(owned[i])
+    for i, mine in owned.items():
+        owned[i] = sort_lines(mine)
     return owned, orphans
 
 
@@ -115,7 +115,7 @@ def _style(lines: list[Line], bbox: BBox) -> dict:
             colors[s.color] += n
             total += n
             bold_chars += n if s.bold else 0
-    rects = [list(map(lambda v: round(v, 1), ln.bbox)) for ln in lines]
+    rects = [[round(v, 1) for v in ln.bbox] for ln in lines]
     pitch = None
     if len(lines) > 1:
         pitch = round((lines[-1].bbox[1] - lines[0].bbox[1]) / (len(lines) - 1), 2)
@@ -411,11 +411,11 @@ def classify_pages(
         if b.role not in ("header", "footer"):
             body_text[b.page_no] += " " + b.text.lower()
     legal = ("isbn", "library of congress", "all rights reserved", "rights restrictions")
-    for p in kinds:
+    for p, kind in kinds.items():
         text = body_text.get(p, "")
         if not text.strip():
-            kinds[p] = "blank" if kinds[p] == "body" else kinds[p]
-        elif kinds[p] == "body" and first_chapter and p < first_chapter:
+            kinds[p] = "blank" if kind == "body" else kind
+        elif kind == "body" and first_chapter and p < first_chapter:
             if any(k in text for k in legal):
                 kinds[p] = "copyright"
             elif len(text.split()) < 60:

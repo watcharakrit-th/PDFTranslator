@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 import psycopg
@@ -18,15 +18,24 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from pdftr import glossary
 from pdftr.db import connect, init_schema
+from pdftr.gpu import GpuGuard, GpuTooHot
 from pdftr.review import ReviewError, stages
 from pdftr.review import chunks as rc
 from pdftr.review import terms as rt
+from pdftr.review import thai as rth
 from pdftr.review.markup import markup_html
 from pdftr.settings import get_settings
+from pdftr.translate.checks import FLAG_HELP as TR_FLAG_HELP
 
 HERE = Path(__file__).parent
 PAGE_ZOOM = 1.6  # page images at ~115 dpi
-STEP_URL = {"r1_chunks_en": "r1", "r2_terms_en": "r2", "r3_terms_th": "r3"}
+STEP_URL = {
+    "r1_chunks_en": "r1",
+    "r2_terms_en": "r2",
+    "r3_terms_th": "r3",
+    "translate": "r4",
+    "r4_chunks_th": "r4",
+}
 
 templates = Jinja2Templates(directory=HERE / "templates")
 templates.env.filters["markup"] = lambda s: Markup(markup_html(s or ""))
@@ -47,13 +56,28 @@ templates.env.filters["highlight"] = _highlight
 templates.env.globals["pct"] = lambda v, total: round(100 * float(v) / float(total), 3)
 
 
-def create_app(database_url: str | None = None, allowed_hosts: list[str] | None = None) -> FastAPI:
-    app = FastAPI(title="pdftr review", docs_url=None, redoc_url=None, openapi_url=None)
+def create_app(
+    database_url: str | None = None, allowed_hosts: list[str] | None = None, engine=None
+) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        if app.state.ollama is not None:  # an Ollama we started for "Re-translate"
+            app.state.ollama.stop()
+
+    app = FastAPI(
+        title="pdftr review", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
+    )
     app.state.database_url = database_url
+    app.state.engine = engine  # tests pass a fake; otherwise started on first use
+    app.state.ollama = None
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=allowed_hosts or ["127.0.0.1", "localhost"]
     )
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
+    from pdftr.render.thai_page import FONT_DIR
+
+    app.mount("/fonts", StaticFiles(directory=FONT_DIR), name="fonts")  # same Thai font as the PDF
 
     @app.middleware("http")
     async def actions_only_from_the_page(request: Request, call_next):
@@ -71,7 +95,35 @@ def create_app(database_url: str | None = None, allowed_hosts: list[str] | None 
         init_schema(conn)
 
     _routes(app)
+    _r4_routes(app)
     return app
+
+
+def _engine(app: FastAPI):
+    """The translation engine, starting Ollama on first use (stopped at shutdown)."""
+    if app.state.engine is None:
+        from pdftr.translate.engine import make_engine
+        from pdftr.translate.ollama import OllamaServer
+
+        settings = get_settings()
+        guard = GpuGuard.from_settings(settings, log=lambda _msg: None)
+        if not guard.available:
+            raise ReviewError("Cannot read the GPU temperature, so the translator will not run.")
+        server = OllamaServer(settings, log=lambda _msg: None)
+        server.start()
+        app.state.ollama = server
+        app.state.engine = make_engine(settings, server.client, guard)
+    return app.state.engine
+
+
+def _gpu_cool_enough() -> None:
+    s = get_settings()
+    temp = GpuGuard.from_settings(s, log=lambda _msg: None).temperature()
+    if temp is not None and temp >= s.gpu_pause_at_c:
+        raise ReviewError(
+            f"The GPU hot spot is at {temp}°C. Wait until it is below "
+            f"{s.gpu_resume_at_c}°C, then try again."
+        )
 
 
 @contextmanager
@@ -386,7 +438,7 @@ def _routes(app: FastAPI) -> None:
 
     @app.post("/doc/{doc_id}/{step}/complete")
     def complete_step(request: Request, doc_id: int, step: str):
-        if step not in ("r1", "r2", "r3"):
+        if step not in ("r1", "r2", "r3", "r4"):
             raise HTTPException(404)
         with db(request) as conn:
             new_stage = stages.complete(conn, doc_id, step)
@@ -444,3 +496,164 @@ def _r1_context(conn: psycopg.Connection, doc: dict, view: dict, only: str) -> d
         "flag_help": rc.FLAG_HELP,
         "r1_state": next(s["state"] for s in stages.step_states(doc["stage"]) if s["step"] == "r1"),
     }
+
+
+# ----------------------------------------------------------------------------- R4
+def _r4_routes(app: FastAPI) -> None:
+    from pdftr.render.preview import preview
+
+    def context(conn: psycopg.Connection, doc: dict, page: int, only: str, view: str) -> dict:
+        data = rc.page_view(conn, doc["id"], page)
+        version, fits = "", []
+        if view == "thai":
+            png, fits = preview(conn, doc["id"], page, get_settings().data_dir)
+            version = png.stem
+        overflow = {f.block_id for f in fits if f.overflow}
+        shrunk = {f.block_id for f in fits if f.scale < 0.85 and not f.overflow}
+        ctx = _r1_context(conn, doc, data, only)  # box labels and page data
+        for c in data["chunks"]:
+            c["overflow"] = any(b in overflow for b in c["block_ids"])
+            c["shrunk"] = any(b in shrunk for b in c["block_ids"])
+            c["th_flagged"] = bool(c["tr_flags"]) or c["overflow"]
+        rth.add_glossary_issues(conn, doc["id"], data["chunks"])
+        ctx.update(
+            step="r4",
+            only=only if only in ("all", "pending", "flagged") else "all",
+            view=view if view in ("thai", "english") else "thai",
+            preview_version=version,
+            prog=rth.progress(conn, doc["id"]),
+            blocker=stages.blockers(conn, doc["id"], "r4"),
+            r4_state=next(
+                s["state"] for s in stages.step_states(doc["stage"]) if s["step"] == "r4"
+            ),
+            tr_flag_help=TR_FLAG_HELP,
+            source_label=rth.TR_SOURCE_LABEL,
+        )
+        return ctx
+
+    @app.get("/doc/{doc_id}/r4")
+    def r4(
+        request: Request,
+        doc_id: int,
+        page: int | None = None,
+        only: str = "all",
+        view: str = "thai",
+    ):
+        with db(request) as conn:
+            doc = _doc(conn, doc_id)
+            state = next(s["state"] for s in stages.step_states(doc["stage"]) if s["step"] == "r4")
+            if state == "locked":
+                return RedirectResponse(f"/doc/{doc_id}", status_code=303)
+            numbers = [
+                r["page_no"]
+                for r in conn.execute(
+                    "SELECT page_no FROM pages WHERE doc_id=%s ORDER BY page_no", (doc_id,)
+                )
+            ]
+            pending = rth.pending_pages(conn, doc_id)
+            if page is None or page not in numbers:
+                page = pending[0] if pending else numbers[0]
+            ctx = context(conn, doc, page, only, view)
+            flagged = rth.flagged_pages(conn, doc_id)
+            chapters = rc.chapters(conn, doc_id, review_col="review_th")
+        i = numbers.index(page)
+        current_chapter = next(
+            (c["title"] for c in reversed(chapters) if c["first_page"] <= page), None
+        )
+        return templates.TemplateResponse(
+            request,
+            "r4.html",
+            _base(
+                request,
+                doc,
+                **ctx,
+                chapters=chapters,
+                current_chapter=current_chapter,
+                prev_page=numbers[i - 1] if i > 0 else None,
+                next_page=numbers[i + 1] if i + 1 < len(numbers) else None,
+                next_flagged=next(
+                    (p for p in flagged if p > page), flagged[0] if flagged else None
+                ),
+                n_flagged_pages=len(flagged),
+                next_pending=next(
+                    (p for p in pending if p > page), pending[0] if pending else None
+                ),
+            ),
+        )
+
+    @app.get("/doc/{doc_id}/page/{page_no}/thai.png")
+    def thai_png(request: Request, doc_id: int, page_no: int):
+        with db(request) as conn:
+            _doc(conn, doc_id)
+            png, _fits = preview(conn, doc_id, page_no, get_settings().data_dir)
+        return FileResponse(png, media_type="image/png", headers={"Cache-Control": "no-cache"})
+
+    def card(request: Request, conn: psycopg.Connection, doc_id: int, chunk_id: int, page: int):
+        doc = _doc(conn, doc_id)
+        ctx = context(conn, doc, page, "all", "thai")
+        chunk = next((c for c in ctx["chunks"] if c["id"] == chunk_id), None)
+        if chunk is None:
+            return _refresh()
+        return templates.TemplateResponse(
+            request, "_chunk_th_response.html", _base(request, doc, **ctx, c=chunk)
+        )
+
+    @app.post("/doc/{doc_id}/chunks/{chunk_id}/th/approve")
+    def th_approve(
+        request: Request,
+        doc_id: int,
+        chunk_id: int,
+        page: int = Form(...),
+        approved: int = Form(...),
+    ):
+        with db(request) as conn:
+            rth.set_approved(conn, chunk_id, bool(approved))
+            return card(request, conn, doc_id, chunk_id, page)
+
+    @app.post("/doc/{doc_id}/chunks/{chunk_id}/th/edit")
+    def th_edit(request: Request, doc_id: int, chunk_id: int, text: str = Form(...)):
+        with db(request) as conn:
+            rth.edit_thai(conn, chunk_id, text)
+        return _refresh()  # the Thai page preview changes too
+
+    @app.post("/doc/{doc_id}/chunks/{chunk_id}/th/retranslate")
+    def th_retranslate(request: Request, doc_id: int, chunk_id: int):
+        _gpu_cool_enough()
+        engine = _engine(request.app)
+        with db(request) as conn:
+            try:
+                rth.retranslate(conn, chunk_id, engine)
+            except GpuTooHot as exc:
+                raise ReviewError(f"Stopped to protect the GPU: {exc}. Try again later.") from exc
+        return _refresh()
+
+    @app.post("/doc/{doc_id}/r4/approve-page")
+    def r4_approve_page(request: Request, doc_id: int, page: int = Form(...)):
+        with db(request) as conn:
+            n = rth.approve_page(conn, doc_id, page)
+        return _toast_and_refresh(f"Approved {n} Thai chunks on page {page}")
+
+    @app.post("/doc/{doc_id}/r4/approve-chapter")
+    def r4_approve_chapter(request: Request, doc_id: int, page: int = Form(...)):
+        with db(request) as conn:
+            title, n = rth.approve_chapter(conn, doc_id, page)
+        return _toast_and_refresh(f"Approved {n} Thai chunks in “{title}”")
+
+    @app.post("/doc/{doc_id}/r4/approve-all")
+    def r4_approve_all(request: Request, doc_id: int):
+        with db(request) as conn:
+            n = rth.approve_all(conn, doc_id)
+        return _toast_and_refresh(f"Approved {n} Thai chunks")
+
+    @app.post("/doc/{doc_id}/terms/suggest-thai")
+    def suggest_thai(request: Request, doc_id: int):
+        _gpu_cool_enough()
+        engine = _engine(request.app)
+        with db(request) as conn:
+            n, hot = rt.suggest_thai(conn, doc_id, engine)
+        if hot:
+            return _toast_and_refresh(
+                f"Suggested Thai for {n} terms, then stopped to protect the GPU ({hot}). "
+                "Please check them."
+            )
+        return _toast_and_refresh(f"Suggested Thai for {n} terms: please check them")

@@ -179,3 +179,21 @@ tr.missing .thai input { border-color: var(--warn); }
   .r1 { grid-template-columns: 1fr; }
   .page-pane { position: static; max-height: none; }
 }
+
+/* R4: Thai chunks */
+@font-face { font-family: "IBM Plex Sans Thai"; src: url(/fonts/IBMPlexSansThai-Regular.ttf); }
+@font-face { font-family: "IBM Plex Sans Thai"; src: url(/fonts/IBMPlexSansThai-Bold.ttf); font-weight: bold; }
+.th, [lang="th"] { font-family: "IBM Plex Sans Thai", "Leelawadee UI", "Noto Sans Thai", sans-serif; }
+.chunk .en { margin: 6px 0 2px; font-size: 12.5px; color: var(--muted); white-space: pre-line; }
+.chunk .text.th { font-size: 15.5px; line-height: 1.75; }
+.pill.src-mt { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.pill.src-tm { background: var(--line); }
+.pill.src-human { background: var(--ok-bg); color: var(--ok); }
+.flag.soft { background: var(--line); color: var(--muted); border-color: transparent; }
+.chunk .issues { margin: 4px 0 0; font-size: 12px; color: var(--warn); }
+.box.thin { border-width: 1px; }
+.banner { margin: 0; padding: 6px 10px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); }
+.seg a.btn { border-radius: 0; padding: 4px 10px; }
+.seg a.btn:first-child { border-radius: 6px 0 0 6px; }
+.seg a.btn:last-child { border-radius: 0 6px 6px 0; }
+.seg a.btn.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
