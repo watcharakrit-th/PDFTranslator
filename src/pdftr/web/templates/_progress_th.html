@@ -1,0 +1,12 @@
+<div id="progress" class="progress"{% if oob %} hx-swap-oob="true"{% endif %}>
+  <div class="bar" title="{{ prog.percent }}% approved"><span style="width: {{ prog.percent }}%"></span></div>
+  <span><strong>{{ prog.approved }}</strong> / {{ prog.total }} approved
+    · <span class="{{ 'warn' if prog.flagged }}">{{ prog.flagged }} flagged pending</span>
+    {% if prog.missing %}· {{ prog.missing }} not translated{% endif %}</span>
+  {% if r4_state == "current" %}
+  <button class="primary" hx-post="/doc/{{ doc.id }}/r4/complete"
+          {% if blocker %}disabled title="{{ blocker }}"{% endif %}>Complete R4 →</button>
+  {% elif r4_state == "done" %}
+  <span class="done">✓ R4 complete</span>
+  {% endif %}
+</div>

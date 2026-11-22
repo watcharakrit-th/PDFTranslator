@@ -124,3 +124,33 @@ CREATE TABLE IF NOT EXISTS jobs (
     started_at  timestamptz NOT NULL DEFAULT now(),
     finished_at timestamptz
 );
+
+-- v2 (M2): review support. "ADD COLUMN IF NOT EXISTS" keeps this file re-runnable
+-- and upgrades an existing database in place.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS markup_en   text NOT NULL DEFAULT '';
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+ALTER TABLE terms  ADD COLUMN IF NOT EXISTS th_source   text;          -- seed|user|csv|mt
+ALTER TABLE terms  ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+
+-- Every review action, for auditing and (later) undo.
+CREATE TABLE IF NOT EXISTS review_log (
+    id      bigserial PRIMARY KEY,
+    doc_id  int REFERENCES documents(id) ON DELETE CASCADE,
+    step    text NOT NULL,                  -- r1|r2|r3
+    action  text NOT NULL,                  -- approve|edit|skip|merge|split|kind|decision|thai|complete
+    target  text,                           -- 'chunk:123', 'term:45', 'page:18'
+    detail  jsonb NOT NULL DEFAULT '{}',
+    at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS review_log_doc_idx ON review_log (doc_id, at);
+
+-- v3 (M3): translation. Thai markup, checks and provenance per chunk and block.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS markup_th     text;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tr_flags      text[] NOT NULL DEFAULT '{}';
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tr_source     text;    -- copy|tm|mt|human
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS tr_key        text;    -- source + rules + engine hash
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS translated_at timestamptz;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS cells_th      jsonb;   -- table cells: {"row,col": thai}
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS tr_flags      text[] NOT NULL DEFAULT '{}';
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS tr_source     text;
+ALTER TABLE blocks ADD COLUMN IF NOT EXISTS tr_key        text;

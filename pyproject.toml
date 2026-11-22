@@ -14,6 +14,11 @@ dependencies = [
     "nvidia-ml-py>=12.570",
     "torch",
     "torchvision",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.18",
+    "pythainlp>=5.1",
 ]
 
 [project.scripts]
@@ -21,6 +26,7 @@ pdftr = "pdftr.cli:app"
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.16.2",
     "pytest>=8.3",
     "ruff>=0.8",
 ]
@@ -49,6 +55,10 @@ explicit = true
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint.flake8-bugbear]
+# CLI and form parameter declarations, evaluated once on purpose
+extend-immutable-calls = ["typer.Argument", "typer.Option", "fastapi.Form", "fastapi.Query"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

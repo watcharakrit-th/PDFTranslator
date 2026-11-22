@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}R3 Thai terms · {{ doc.title or doc.file_name }}{% endblock %}
+{% block content %}
+<section class="terms r3">
+  <header class="intro">
+    <h1>R3 · Thai term list</h1>
+    <p>Terms you chose to <strong>translate</strong> in R2. Thai from the built-in seed list is
+      filled in; type the missing ones (machine suggestions come with the translator in M3).
+      Typing a Thai term approves it. {{ kept_english }} terms stay in English and need nothing here.
+      After this step the glossary is final and the book is translated with it.</p>
+  </header>
+  {% include "_terms_toolbar.html" %}
+  {% if step_state == "current" %}
+  <div class="row addrow">
+    <button hx-post="/doc/{{ doc.id }}/terms/suggest-thai" hx-indicator="#suggest-busy"
+            hx-confirm="Ask the translator for Thai suggestions for terms that have none? It uses the GPU briefly; you still approve each suggestion.">Suggest missing Thai (machine)</button>
+    <span id="suggest-busy" class="htmx-indicator muted">asking the translator…</span>
+  </div>
+  {% endif %}
+  <table class="termtable">
+    <thead><tr><th>English</th><th>Thai</th><th class="num">Uses</th><th>Example</th><th></th></tr></thead>
+    <tbody>
+      {% for t in data.rows %}{% include "_term_r3.html" %}{% else %}
+      <tr><td colspan="5" class="empty">Nothing here{% if status != "all" %}: all done in this view{% endif %}.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% include "_pager.html" %}
+</section>
+{% endblock %}

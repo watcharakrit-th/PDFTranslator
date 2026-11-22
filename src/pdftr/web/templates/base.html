@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}pdftr review{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/">pdftr</a>
+    {% if doc %}
+    <span class="doctitle" title="{{ doc.file_name }}">{{ doc.title or doc.file_name }}</span>
+    <nav class="steps" aria-label="Review steps">
+      {% for s in steps %}
+        {% if s.state in ("done", "current") %}
+        <a class="step {{ s.state }}" href="/doc/{{ doc.id }}/{{ s.step }}"
+           {% if step == s.step %}aria-current="page"{% endif %}>
+          {% if s.state == "done" %}✓ {% endif %}{{ s.label }}</a>
+        {% else %}
+        <span class="step {{ s.state }}" title="{{ 'Unlocks when the previous step is complete' if s.state == 'locked' else 'Comes in a later milestone' }}">{{ s.label }}</span>
+        {% endif %}
+      {% endfor %}
+    </nav>
+    {% endif %}
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -1,6 +1,7 @@
 # pdftr: English textbook PDF → bilingual EN/TH PDF + pgvector
 
-See [SPEC.md](SPEC.md) for the design and milestones. Status: **M1 (ingest) done.**
+See [SPEC.md](SPEC.md) for the design and milestones.
+Status: **M1 (ingest), M2 (review page for R1–R3) and M3 (translation + R4) done.**
 
 ## Setup (Windows, PowerShell)
 
@@ -24,15 +25,90 @@ Everything large stays under `D:\Python\PDFTranslator`:
 
 ## GPU safety
 
-GPU work runs in small batches (5 pages; GPU batch size 2). Before every batch the GPU
-temperature is checked: at **75 °C or more** the run pauses until it is back at **65 °C**.
-Change the limits in `.env` (`PDFTR_GPU_PAUSE_AT_C`, `PDFTR_GPU_RESUME_AT_C`), or set
-`PDFTR_GPU_DEVICE=cpu` to keep the GPU idle (slower). `pdftr gpu` shows the current state.
+Every limit applies to the GPU **hot spot**, its hottest sensor. That's the reading
+HWiNFO and GPU-Z show, and pdftr reads it through NVIDIA's NVAPI. On the RTX 2070 SUPER
+the hot spot runs about 11 °C above the core temperature at idle and about 25 °C above it
+under load. The core temperature is what `nvidia-smi` and most tools report.
 
-## Commands (M1)
+- **Waits:** GPU work (layout batches, translation requests) starts only below **75 °C**.
+  Once the hot spot reaches that, work waits until it is back at **65 °C**.
+- **Stops:** translation requests are streamed, and a request is stopped the moment the
+  hot spot reaches **90 °C**. After the GPU cools down, the text is retried in pieces of
+  at most 40 words. If even a short piece reaches 90 °C, the run stops, and the work done
+  so far is saved.
+- **Rests:** after each request the GPU rests as long as the request took, so it is busy
+  at most half the time.
+- **Settings:** change the limits in `.env` with `PDFTR_GPU_PAUSE_AT_C`, `_RESUME_AT_C`,
+  `_ABORT_AT_C` and `PDFTR_GPU_REST_RATIO`. `pdftr gpu` shows the hot spot, core, power
+  and fan, and `PDFTR_GPU_DEVICE=cpu` keeps the GPU idle during ingest.
+- **Power limit (recommended):** a lower power limit cuts heat at the source, and costs
+  translation little speed. In an **Administrator** PowerShell:
+
+  ```powershell
+  nvidia-smi -pl 150     # watts; this card allows 125-250, default 235; resets at reboot
+  # optional: re-apply it at every sign-in
+  schtasks /Create /TN "GPU power limit 150W" /TR "nvidia-smi -pl 150" /SC ONLOGON /RL HIGHEST /F
+  ```
+
+  If `nvidia-smi` refuses, the Power Limit slider in MSI Afterburner does the same.
+  With 150 W, a test run peaked at 76 °C hot spot. At 235 W the hot spot reached 105 °C.
+
+## Reviewing (R1–R3)
+
+```powershell
+.venv\Scripts\pdftr review          # opens http://127.0.0.1:8765 in your browser
+```
+
+- **R1 · English chunks.** Your page image is on the left, with every chunk drawn as a numbered box. Hover a card to light up its box; click a box to jump to its card. For each chunk you can:
+  - **Approve** it
+  - **Edit** its text (code and key-term styling are kept where the words are unchanged)
+  - **Skip** it (kept, but not embedded)
+  - change its **kind**
+  - **Merge ↑** it into the chunk before it
+  - **Split ✂** it between sentences or blocks
+
+  You can also approve a whole page, a chapter or the whole book.
+  - **Filters:** *pending* and *flagged* show only what still needs a look, and **Next flagged** jumps to the next page with a flagged chunk.
+  - **Shortcuts:** `n` / `p` next or previous page · `f` next flagged page · `Shift+A` approve page.
+- **R2 · English terms.** The tabs split terms by where they came from: the book's key terms, acronyms, "maybe" phrases and commands. For each term choose **Keep English**, **Translate** or **Not a term**; changing the decision approves the term. A first draft comes from the built-in seed list (policy b).
+- **R3 · Thai terms.** Only the terms to translate. Thai from the seed list is filled in; type the missing ones. Typing approves the term. After R3 the glossary is final, ready for translation in M3.
+- **Order:** each step unlocks when the previous one is complete. The glossary is shared by all your books.
+
+**Safety.** The page listens on 127.0.0.1 only and answers only to that host name. Actions must come from the page itself (htmx header check), so other websites cannot trigger them. It has no login: on a server, keep it on 127.0.0.1 and use an SSH tunnel.
+
+**Glossary CSV.** The columns are `term_en, decision, term_th, kind, note`, where `decision` is `keep_en`, `translate` or `ignore`. Imported rows override the glossary and count as reviewed. Export, edit in Excel, import back:
+
+```powershell
+.venv\Scripts\pdftr glossary export glossary.csv
+.venv\Scripts\pdftr glossary import glossary.csv
+```
+
+## Translation (M3) and R4
+
+- **Engine:** Typhoon Translate 1.5 (4B), running on your GPU through **Ollama**. Ollama is the portable build in `.cache\tools\ollama`, and the model (2.5 GB) is in `.cache\ollama\models`, both on drive D. `pdftr` starts Ollama when it needs it and stops it afterwards, so nothing auto-starts with Windows.
+- **Run:** after R1–R3 are complete, run `pdftr translate <doc>`.
+  - **Glossary rules:** each request gets the glossary rules for the terms that appear in its text.
+  - **Placeholders:** code, paths and URLs are swapped for placeholders, so the model can't change them.
+  - **Checks:** each result is checked for dropped code, English left untranslated, odd length, polite particles and missed glossary terms, including Keep English terms that got translated. Problems become flags in R4.
+  - **Clean-up:** common Thai spellings of Keep English names (ลินุกซ์ → Linux) are switched back automatically, and text made only of Keep English terms is not sent to the model.
+  - **Resuming:** every finished piece is saved at once. Ctrl+C (or a stop to protect the GPU) ends a run, and running the same command again continues it.
+- **Translation memory:** identical text is translated once. After a glossary change only the affected text is translated again. Your R4 edits are reused automatically wherever the same English appears.
+- **Preview:** `pdftr translate <doc> --pages 15-24` works before R3 too, to judge quality early.
+- **GPU safety:** see [GPU safety](#gpu-safety). The R3 **Suggest** and R4 **Re-translate** buttons follow the same limits.
+- **R4 · Thai chunks:** on the review page, the left side shows the **Thai page preview** (the right side of the bilingual PDF), or the English page. Each chunk card shows the English, the Thai, where the Thai came from (machine / memory / you / kept in English), any check flags (a glossary flag names its term), and whether the Thai had to shrink or did not fit. You can approve, **Edit Thai** (which also approves it) or **Re-translate** a chunk.
+- **`pdftr render-page <doc> <page>`** writes one Thai page as PNG and PDF.
+- **Model license:** the Typhoon Translate model card lists Apache-2.0 in its metadata but the Gemma license in its text, plus the OpenTyphoon terms of use. That's fine for this personal tool; check both before any commercial use.
+
+## Commands
 
 | Command | Does |
 |---|---|
+| `pdftr translate <doc> [--pages 15-24] [--force]` | Translate (after R3; any time with `--pages`) |
+| `pdftr ollama status` / `pdftr ollama pull` | Check Ollama / download the translation model |
+| `pdftr render-page <doc> <page>` | One Thai page as PNG + PDF |
+| `pdftr review [--port 8765] [--no-open]` | Open the review web page (R1–R3) |
+| `pdftr glossary export\|import <csv>` | Glossary to / from CSV (UTF-8, opens in Excel) |
+| `pdftr glossary seed` | Re-apply the seed list to terms nobody has reviewed yet |
 | `pdftr ingest <pdf> --pages 1-100` | Layout analysis, cutting, term candidates → database |
 | `pdftr docs` | List documents |
 | `pdftr stats <doc>` | Counts by page kind, block role, chunk kind, flag |
@@ -50,3 +126,5 @@ which deletes that document's chunks and reviews and starts over.
 ```powershell
 .venv\Scripts\python -m pytest -q
 ```
+
+Database tests create a throwaway database inside the running container and drop it afterwards; they are skipped when the database is not running.

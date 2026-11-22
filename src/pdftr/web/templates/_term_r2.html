@@ -1,0 +1,28 @@
+{% set approved = t.review_en == "approved" %}
+{% set base = "/doc/" ~ doc.id ~ "/terms/" ~ t.id %}
+<tr id="term-{{ t.id }}" class="{{ 'approved' if approved }} d-{{ t.decision }}">
+  <td class="term">
+    <form hx-post="{{ base }}/rename" hx-trigger="change" hx-target="#term-{{ t.id }}" hx-swap="outerHTML">
+      <input name="term_en" value="{{ t.term_en }}" aria-label="English term">
+    </form>
+    <span class="kind">{{ t.kind }}</span>
+  </td>
+  <td class="decision">
+    <span class="seg" role="group" aria-label="Decision">
+      {% for d, label in decisions.items() %}
+      <button class="{{ 'on' if t.decision == d }}" hx-post="{{ base }}/decision" hx-vals='{"decision": "{{ d }}"}'
+              hx-target="#term-{{ t.id }}" hx-swap="outerHTML">{{ label }}</button>
+      {% endfor %}
+    </span>
+    {% if t.decision == "translate" %}<span class="th" lang="th">→ {{ t.term_th or "(Thai in R3)" }}</span>{% endif %}
+  </td>
+  <td class="num">{{ t.freq or 0 }}</td>
+  <td>{% if t.first_page %}<a href="/doc/{{ doc.id }}/r1?page={{ t.first_page }}">p{{ t.first_page }}</a>{% endif %}</td>
+  <td class="sources">{{ (t.sources or [])|join(", ")|replace("_", " ") }}</td>
+  <td class="example">{{ t.example|highlight(t.term_en) }}</td>
+  <td>
+    <button class="{{ '' if approved else 'primary' }}" hx-post="{{ base }}/approve"
+            hx-vals='{"step": "r2", "approved": {{ 0 if approved else 1 }}}'
+            hx-target="#term-{{ t.id }}" hx-swap="outerHTML">{{ "✓" if approved else "Approve" }}</button>
+  </td>
+</tr>

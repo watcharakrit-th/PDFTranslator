@@ -29,17 +29,32 @@ class Settings(BaseSettings):
     home: Path = PROJECT_ROOT
     database_url: str = "postgresql://pdftr:pdftr@127.0.0.1:5433/pdftr"
 
-    # GPU safety: work runs in small batches; between batches the GPU is
-    # checked and the run pauses while it is hotter than ``gpu_pause_at_c``.
+    # GPU safety. All limits are the GPU *hot spot* (its hottest sensor), which on the
+    # RTX 2070 SUPER runs about 25 °C above the core temperature under load.
     gpu_device: str = "cuda"  # "cuda" or "cpu"
-    gpu_pause_at_c: int = 75
-    gpu_resume_at_c: int = 65
+    gpu_pause_at_c: int = 75  # no new GPU work at or above this...
+    gpu_resume_at_c: int = 65  # ...until the hot spot is back at this
+    gpu_abort_at_c: int = 90  # a translation request is stopped the moment it gets here
+    gpu_hotspot_margin_c: int = 25  # where the hot spot can't be read: core + this
     gpu_cooldown_s: float = 2.0
     docling_batch_pages: int = 5
+    # After each translation request the GPU rests for this fraction of the request's
+    # time (1.0 = busy at most half the time).
+    gpu_rest_ratio: float = 1.0
+
+    # Translation (M3)
+    translate_engine: str = "typhoon"
+    translate_model: str = "scb10x/typhoon-translate1.5-4b"
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_exe: Path | None = None  # default: .cache/tools/ollama, then PATH
 
     @property
     def cache_dir(self) -> Path:
         return self.home / ".cache"
+
+    @property
+    def ollama_models_dir(self) -> Path:
+        return self.cache_dir / "ollama" / "models"
 
     @property
     def data_dir(self) -> Path:
@@ -60,6 +75,7 @@ def configure_environment(settings: Settings | None = None) -> None:
         "HF_HOME": cache / "huggingface",
         "TORCH_HOME": cache / "torch",
         "XDG_CACHE_HOME": cache,
+        "PYTHAINLP_DATA_DIR": cache / "pythainlp",
         "TMP": tmp,
         "TEMP": tmp,
         "TMPDIR": tmp,

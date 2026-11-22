@@ -11,6 +11,7 @@ Rules (from the requirements):
 
 from __future__ import annotations
 
+import html
 import re
 
 from pdftr.ingest.models import Block, Chunk
@@ -28,6 +29,11 @@ SKIP_ROLES = {"header", "footer", "picture", "formula", "toc"}
 NO_EMBED_SECTIONS = {"key terms"}  # lists of bare terms: kept, used for the glossary, not embedded
 ANSWER_RE = re.compile(r"^(answer|explanation|solution)\s*:", re.IGNORECASE)
 OPTION_MARKER_RE = re.compile(r"^\(?[a-hA-H][.)]$")
+NUMBERED_MARKER_RE = re.compile(r"^\(?\d{1,3}[.)]$")
+# "...? (Choose three answers.)" is still a question
+QUESTION_END_RE = re.compile(r"\?\s*(\((choose|select)[^)]*\)\.?)?$", re.IGNORECASE)
+# sections where "12. statement" + "a. True / b. False" is a question, not a procedure
+QUIZ_SECTION_RE = re.compile(r"question|self-check|quiz|review|exam|test", re.IGNORECASE)
 
 
 class Cutter:
@@ -42,6 +48,7 @@ class Cutter:
         self.list_parents: dict[int, str] = {}
         self.last_question: str | None = None
         self.mcq: Chunk | None = None  # open multiple-choice question
+        self.last_numbered: Chunk | None = None  # last "12." list item
 
     # ------------------------------------------------------------------ helpers
     def _section_path(self) -> list[str]:
@@ -61,11 +68,12 @@ class Cutter:
             lines.append("Question: " + question)
         return "\n".join(lines)
 
-    def _new(self, kind: str, block: Block, text: str, **ctx) -> Chunk:
+    def _new(self, kind: str, block: Block, text: str, markup: str = "", **ctx) -> Chunk:
         chunk = Chunk(
             kind=kind,
             blocks=[block],
             text=text,
+            markup=markup,
             section_path=self._section_path(),
             context=self._context(**ctx),
         )
@@ -93,6 +101,7 @@ class Cutter:
         if page_kind in SKIP_PAGE_KINDS or role in SKIP_ROLES:
             return
         plain = strip_markup(block.markup) if block.markup else block.text
+        markup = block.markup or html.escape(plain, quote=False)
 
         if role == "heading":
             level = block.level or 1
@@ -120,18 +129,20 @@ class Cutter:
             return  # keep self.cont: prose may continue after a code sample
 
         if role == "list_item":
-            self._feed_list_item(block, plain)
+            self._feed_list_item(block, plain, markup)
             return
 
         # paragraph, callout, caption, footnote, other
         if (
             role in ("paragraph", "other")
             and self.cont is not None
+            and "mcq" not in self.cont.flags  # options never continue as prose
             and not ends_sentence(self.cont.text)
             and starts_lowercase(plain)
         ):
             prev_page = self.cont.blocks[-1].page_no
             self.cont.text = join_blocks(self.cont.text, plain, self.vocab)
+            self.cont.markup = join_blocks(self.cont.markup, markup, self.vocab)
             self.cont.blocks.append(block)
             self.cont.flags.append("joined_pages" if block.page_no != prev_page else "joined")
             return
@@ -143,7 +154,7 @@ class Cutter:
                 kind, question = "answer", self.last_question
             elif plain.endswith("?") and word_count(plain) <= 60:
                 kind = "question"
-        chunk = self._new(kind, block, plain, question=question)
+        chunk = self._new(kind, block, plain, markup, question=question)
         if role == "other":
             chunk.flags.append("unknown_role")
         if kind == "question":
@@ -158,21 +169,41 @@ class Cutter:
             self.cont = chunk
         # captions/footnotes keep self.cont: a paragraph may continue around a figure
 
-    def _feed_list_item(self, block: Block, plain: str) -> None:
+    def _feed_list_item(self, block: Block, plain: str, markup: str) -> None:
         level = block.level or 0
         marker = (block.marker or "").strip()
-        if self.mcq is not None and OPTION_MARKER_RE.match(marker):
+        option = bool(OPTION_MARKER_RE.match(marker))
+        stem = self.last_numbered
+        if (
+            option
+            and self.mcq is None
+            and stem is not None
+            and self.chunks
+            and stem is self.chunks[-1]
+            and any(QUIZ_SECTION_RE.search(t) for t in self._section_path())
+        ):
+            # "18. Which three partitions ... (Choose three answers.)" or a true/false
+            # statement, directly followed by a./b. options: it is a question
+            stem.kind = "question"
+            stem.context = "\n".join(
+                ln for ln in stem.context.split("\n") if not ln.startswith("Question: ")
+            )
+            self.last_question = stem.text
+            self.mcq = stem
+        if self.mcq is not None and option:
             self.mcq.text += f"\n{marker} {plain}"
+            self.mcq.markup += f"\n{html.escape(marker, quote=False)} {markup}"
             self.mcq.blocks.append(block)
             if "mcq" not in self.mcq.flags:
                 self.mcq.flags.append("mcq")
             return
         parent = self.list_parents.get(level - 1) if level > 0 else None
-        is_question = plain.endswith("?")
+        is_question = bool(QUESTION_END_RE.search(plain))
         chunk = self._new(
             "question" if is_question else "list_item",
             block,
             plain,
+            markup,
             intro=self.list_intro,
             parent=parent,
             question=None if is_question else self.last_question,
@@ -185,6 +216,7 @@ class Cutter:
             self.mcq = chunk
         else:
             self.mcq = None
+        self.last_numbered = chunk if NUMBERED_MARKER_RE.match(marker) else None
         self.cont = chunk
 
     def finish(self) -> list[Chunk]:
@@ -204,7 +236,7 @@ class Cutter:
     def _split(self, chunk: Chunk) -> list[Chunk]:
         parts: list[list[str]] = [[]]
         count = 0
-        for sentence in split_sentences(chunk.text):
+        for sentence in split_sentences(chunk.markup or chunk.text):
             n = word_count(sentence)
             if parts[-1] and count + n > self.target_words:
                 parts.append([])
@@ -217,7 +249,8 @@ class Cutter:
                 Chunk(
                     kind=chunk.kind,
                     blocks=chunk.blocks,
-                    text=" ".join(sentences),
+                    text=strip_markup(" ".join(sentences)),
+                    markup=" ".join(sentences) if chunk.markup else "",
                     section_path=chunk.section_path,
                     context=chunk.context,
                     list_level=chunk.list_level,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -15,6 +16,15 @@ from pdftr.settings import configure_environment, get_settings
 
 class AlreadyIngested(Exception):
     pass
+
+
+def document_title(meta_title: str | None, stem: str) -> str:
+    """The PDF's own title, unless it is missing or all capitals (often an internal
+    code such as "3P-EBK: ..."); then the file name without trailing "(...)" notes."""
+    title = (meta_title or "").strip()
+    if title and not title.isupper():
+        return title
+    return re.sub(r"(\s*\([^()]*\))+\s*$", "", stem).strip() or stem
 
 
 def sha256_file(path: Path) -> str:
@@ -113,12 +123,10 @@ def _run(
     t_start = time.monotonic()
 
     # 1) layout analysis (GPU, small batches, temperature checkpoints)
-    guard = GpuGuard(
-        settings.gpu_pause_at_c, settings.gpu_resume_at_c, settings.gpu_cooldown_s, log=log
-    )
+    guard = GpuGuard.from_settings(settings, log=log)
     log(
         f"Layout analysis: pages {first}-{last} in batches of {settings.docling_batch_pages} "
-        f"(pause at {settings.gpu_pause_at_c}°C)"
+        f"(GPU hot spot: pause at {settings.gpu_pause_at_c}°C)"
     )
     cache_dir = settings.data_dir / "layout_cache" / file_hash[:16]
     items = extract_items(pdf_path, first, last, settings, guard, log, cache_dir=cache_dir)
@@ -183,7 +191,7 @@ def _run(
                     file_hash=file_hash,
                     file_name=pdf_path.name,
                     file_path=str(pdf_path),
-                    title=(pdf.metadata or {}).get("title") or pdf_path.stem,
+                    title=document_title((pdf.metadata or {}).get("title"), pdf_path.stem),
                     page_count=pdf.page_count,
                 )
                 conn.execute("UPDATE jobs SET doc_id=%s WHERE id=%s", (doc_id, job_id))
@@ -232,7 +240,7 @@ def _run(
         "seconds_layout": round(t_layout - t_start, 1),
         "seconds_cut_terms": round(t_cut - t_layout, 1),
         "seconds_total": round(time.monotonic() - t_start, 1),
-        "gpu_peak_c": guard.peak_c,
+        "gpu_peak_hotspot_c": guard.peak_c,
         "gpu_paused_s": round(guard.paused_s),
         "dump": str(dump),
     }

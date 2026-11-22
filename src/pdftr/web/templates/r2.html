@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}R2 English terms · {{ doc.title or doc.file_name }}{% endblock %}
+{% block content %}
+<section class="terms r2">
+  <header class="intro">
+    <h1>R2 · English term list</h1>
+    <p>Your policy: <strong>Translate</strong> terms that have an established Thai word
+      (database → ฐานข้อมูล); <strong>Keep English</strong> for specialized terms (shell script,
+      subshell). <strong>Not a term</strong> drops it from the glossary. Changing a decision
+      approves the term; the glossary is shared by all your books.</p>
+  </header>
+  {% include "_terms_toolbar.html" %}
+  <div class="row addrow">
+    <form hx-post="/doc/{{ doc.id }}/terms/add" class="inline">
+      <input name="term_en" placeholder="Add a term…" required aria-label="New English term">
+      <select name="decision" aria-label="Decision">
+        {% for d, label in decisions.items() %}<option value="{{ d }}">{{ label }}</option>{% endfor %}
+      </select>
+      <button>Add</button>
+    </form>
+    <span class="spacer"></span>
+    <a class="btn" href="/glossary.csv">Export glossary CSV</a>
+    <form hx-post="/glossary/import" hx-encoding="multipart/form-data" class="inline">
+      <input type="file" name="file" accept=".csv,text/csv" required aria-label="Glossary CSV">
+      <button>Import CSV</button>
+    </form>
+  </div>
+  <table class="termtable">
+    <thead><tr><th>Term</th><th>Decision</th><th class="num">Uses</th><th>First</th><th>Found by</th><th>Example</th><th></th></tr></thead>
+    <tbody>
+      {% for t in data.rows %}{% include "_term_r2.html" %}{% else %}
+      <tr><td colspan="7" class="empty">Nothing here{% if status == "pending" %}: every term in this group is reviewed{% endif %}.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% include "_pager.html" %}
+</section>
+{% endblock %}
