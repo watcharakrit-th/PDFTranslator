@@ -1,0 +1,23 @@
+# PostgreSQL + pgvector for pdftr.
+# Docker Desktop stores this volume under D:\Docker\wsl (its disk image location).
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: pdftr-db
+    environment:
+      POSTGRES_USER: ${PDFTR_DB_USER:-pdftr}
+      POSTGRES_PASSWORD: ${PDFTR_DB_PASSWORD:-pdftr}
+      POSTGRES_DB: ${PDFTR_DB_NAME:-pdftr}
+    ports:
+      - "127.0.0.1:5433:5432"   # localhost only; 5433 avoids clashing with other Postgres installs
+    volumes:
+      - pdftr-pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PDFTR_DB_USER:-pdftr} -d ${PDFTR_DB_NAME:-pdftr}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pdftr-pgdata:
