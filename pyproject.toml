@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart>=0.0.18",
     "pythainlp>=5.1",
     "fonttools>=4.50",
+    "anthropic>=1.0",
 ]
 
 [project.scripts]
@@ -37,8 +38,8 @@ requires = ["uv_build>=0.13.9,<0.14.0"]
 build-backend = "uv_build"
 
 [tool.uv]
-# Keep uv's download cache on drive D (drive C is nearly full).
-cache-dir = "D:/Python/PDFTranslator/.cache/uv"
+# uv's download cache location comes from UV_CACHE_DIR, which scripts/env.ps1 (Windows)
+# and scripts/env.sh (Linux) set to .cache/uv inside the project.
 # Never download a Python interpreter implicitly (it would land on drive C).
 # Install explicitly with UV_PYTHON_INSTALL_DIR set; see scripts/env.ps1.
 python-downloads = "manual"

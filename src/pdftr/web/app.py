@@ -110,12 +110,16 @@ def create_app(
 
 
 def _engine(app: FastAPI):
-    """The translation engine, starting Ollama on first use (stopped at shutdown)."""
+    """The translation engine: Claude, or Typhoon with Ollama started on first use
+    (stopped at shutdown)."""
     if app.state.engine is None:
         from pdftr.translate.engine import make_engine
         from pdftr.translate.ollama import OllamaServer
 
         settings = get_settings()
+        if settings.translate_engine == "claude":
+            app.state.engine = make_engine(settings, name="claude")
+            return app.state.engine
         guard = GpuGuard.from_settings(settings, log=lambda _msg: None)
         if not guard.available:
             raise ReviewError("Cannot read the GPU temperature, so the translator will not run.")
@@ -126,8 +130,20 @@ def _engine(app: FastAPI):
     return app.state.engine
 
 
+def _api_errors() -> tuple[type[Exception], ...]:
+    """Errors of a remote engine (Claude) to show as a message instead of a crash."""
+    try:
+        import anthropic
+    except ImportError:
+        return ()
+    return (anthropic.APIError,)
+
+
 def _gpu_cool_enough() -> None:
+    """Refuse a GPU request while the card is hot or over its power limit (Typhoon only)."""
     s = get_settings()
+    if s.translate_engine == "claude":
+        return
     guard = GpuGuard.from_settings(s, log=lambda _msg: None)
     problem = guard.power_problem(s.gpu_max_power_w) if s.gpu_device == "cuda" else None
     if problem:
@@ -640,6 +656,8 @@ def _r4_routes(app: FastAPI) -> None:
                 rth.retranslate(conn, chunk_id, engine)
             except GpuTooHot as exc:
                 raise ReviewError(f"Stopped to protect the GPU: {exc}. Try again later.") from exc
+            except _api_errors() as exc:
+                raise ReviewError(f"The translator did not answer: {exc}") from exc
         return _refresh()
 
     @app.post("/doc/{doc_id}/blocks/{block_id}/th/edit")
@@ -685,7 +703,10 @@ def _r4_routes(app: FastAPI) -> None:
         _gpu_cool_enough()
         engine = _engine(request.app)
         with db(request) as conn:
-            n, hot = rt.suggest_thai(conn, doc_id, engine)
+            try:
+                n, hot = rt.suggest_thai(conn, doc_id, engine)
+            except _api_errors() as exc:
+                raise ReviewError(f"The translator did not answer: {exc}") from exc
         if hot:
             return _toast_and_refresh(
                 f"Suggested Thai for {n} terms, then stopped to protect the GPU ({hot}). "

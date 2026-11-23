@@ -1,4 +1,8 @@
-"""Translation engines. Typhoon (via Ollama) now; others (e.g. Claude) plug in later."""
+"""Translation engines: Typhoon on this PC (via Ollama) and Claude (Anthropic API).
+
+Every engine has ``name`` (part of each translation-memory key), ``workers`` (how many
+requests may run at once: 1 for the GPU) and ``translate(text, rules)``.
+"""
 
 from __future__ import annotations
 
@@ -17,11 +21,14 @@ from pdftr.translate.ollama import OllamaClient, RequestStopped
 class Result:
     text: str
     seconds: float
-    tokens: int
+    tokens: int  # output tokens
+    flags: tuple[str, ...] = ()  # e.g. ("refused",): the engine declined this text
+    input_tokens: int = 0
 
 
 class Engine(Protocol):
     name: str
+    workers: int
 
     def translate(
         self,
@@ -68,6 +75,8 @@ class TyphoonEngine:
         "below and return only the translated text."
     )
 
+    workers = 1  # one GPU
+
     def __init__(self, client: OllamaClient, model: str) -> None:
         self.client = client
         self.model = model
@@ -112,6 +121,8 @@ class GuardedEngine:
     3. rests afterwards in proportion to the work (duty-cycle limit).
     """
 
+    workers = 1  # the guard watches one request at a time
+
     def __init__(self, inner: Engine, guard: GpuGuard, rest_ratio: float = 1.0) -> None:
         self.inner = inner
         self.guard = guard
@@ -151,12 +162,37 @@ class GuardedEngine:
         return result
 
 
-def make_engine(settings: Settings, client: OllamaClient, guard: GpuGuard | None = None) -> Engine:
-    """The configured engine; with a ``guard``, every request runs under it."""
-    if settings.translate_engine == "typhoon":
-        engine: Engine = TyphoonEngine(client, settings.translate_model)
-    else:
-        raise ValueError(f"Unknown translation engine: {settings.translate_engine}")
+ENGINES = ("typhoon", "claude")
+
+
+def make_engine(
+    settings: Settings,
+    client: OllamaClient | None = None,
+    guard: GpuGuard | None = None,
+    *,
+    name: str | None = None,
+) -> Engine:
+    """The configured engine (``name`` overrides the setting).
+
+    Typhoon needs the Ollama ``client``; with a ``guard`` every request runs under it.
+    Claude runs remotely, so it needs neither.
+    """
+    name = name or settings.translate_engine
+    if name == "claude":
+        from pdftr.translate.claude import ClaudeEngine
+
+        key = settings.anthropic_api_key
+        return ClaudeEngine(
+            settings.claude_model,
+            effort=settings.claude_effort,
+            workers=settings.claude_workers,
+            api_key=key.get_secret_value() if key else None,
+        )
+    if name != "typhoon":
+        raise ValueError(f"Unknown translation engine {name!r}: use one of {', '.join(ENGINES)}")
+    if client is None:
+        raise ValueError("The Typhoon engine needs an Ollama client")
+    engine: Engine = TyphoonEngine(client, settings.translate_model)
     if guard is not None:
         engine = GuardedEngine(engine, guard, settings.gpu_rest_ratio)
     return engine

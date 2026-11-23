@@ -26,6 +26,8 @@ FLAG_HELP = {
     "glossary": "A glossary term is not as decided in R3 (its Thai is missing, or a term "
     "to keep in English was translated)",
     "split_th": "Thai split across a page break: check where the second part starts",
+    "refused": "The engine declined to translate this text, so it is still English: "
+    "translate it yourself (Edit Thai) or try Re-translate",
 }
 
 
