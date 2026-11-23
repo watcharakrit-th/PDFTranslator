@@ -19,6 +19,7 @@ dependencies = [
     "jinja2>=3.1",
     "python-multipart>=0.0.18",
     "pythainlp>=5.1",
+    "fonttools>=4.50",
 ]
 
 [project.scripts]

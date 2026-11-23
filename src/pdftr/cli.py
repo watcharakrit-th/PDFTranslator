@@ -488,24 +488,67 @@ def translate(
 def render_page(doc_id: int, page: int) -> None:
     """Draw the Thai version of one page (PNG + PDF in data/doc_<id>/thai/)."""
     from pdftr.db import connect
-    from pdftr.render.preview import page_blocks
-    from pdftr.render.thai_page import render_thai_page
+    from pdftr.render.preview import thai_page
     from pdftr.settings import configure_environment, get_settings
 
     s = get_settings()
     configure_environment(s)
     with connect() as conn:
-        doc = conn.execute("SELECT file_path FROM documents WHERE id=%s", (doc_id,)).fetchone()
-        blocks = page_blocks(conn, doc_id, page)
-    rendered, fits = render_thai_page(doc["file_path"], page, blocks)
-    out = s.data_dir / f"doc_{doc_id}" / "thai"
-    out.mkdir(parents=True, exist_ok=True)
-    pdf_path, png_path = out / f"page{page:04d}.pdf", out / f"page{page:04d}.png"
-    rendered.save(pdf_path, garbage=3, deflate=True)
-    rendered[0].get_pixmap(dpi=130).save(png_path)
-    shrunk = sum(1 for f in fits if f.scale < 1 and not f.overflow)
-    overflow = sum(1 for f in fits if f.overflow)
+        rendered = thai_page(conn, doc_id, page, s.data_dir)
+    shrunk = sum(1 for f in rendered.fits if f.scale < 1 and not f.overflow)
+    overflow = sum(1 for f in rendered.fits if f.overflow)
     console.print(
-        f"Wrote {png_path} and {pdf_path}: {len(fits)} text areas, "
+        f"Wrote {rendered.png} and {rendered.pdf}: {len(rendered.fits)} text areas, "
         f"{shrunk} shrunk to fit, {overflow} do not fit"
+    )
+
+
+@app.command()
+def render(
+    doc_id: int,
+    layout: str = typer.Option(
+        "side-by-side",
+        "--layout",
+        "-l",
+        help="side-by-side (English left, Thai right) or alternate",
+    ),
+    pages: str = typer.Option(None, "--pages", "-p", help="Only these pages, e.g. 15-34"),
+    out: Path = typer.Option(None, "--out", "-o", help="Output PDF (default: data/output/)"),
+) -> None:
+    """Build the bilingual PDF. Can be re-run any time; unchanged pages come from the cache."""
+    from pdftr.db import connect, init_schema
+    from pdftr.render.book import LAYOUTS, render_book
+    from pdftr.settings import configure_environment, get_settings
+
+    if layout not in LAYOUTS:
+        console.print(f"[red]--layout must be one of: {', '.join(LAYOUTS)}[/]")
+        raise typer.Exit(2)
+    s = get_settings()
+    configure_environment(s)
+    first, last = parse_pages(pages)
+    with connect() as conn:
+        init_schema(conn)
+        todo = conn.execute(
+            """SELECT count(*) FILTER (WHERE text_th IS NULL) AS missing,
+                      count(*) FILTER (WHERE review_th <> 'approved') AS unreviewed
+               FROM chunks WHERE doc_id=%s AND page_start BETWEEN %s AND %s""",
+            (doc_id, first, last),
+        ).fetchone()
+        if todo["missing"] or todo["unreviewed"]:
+            console.print(
+                f"[yellow]Note:[/] {todo['missing']} chunks have no Thai yet (shown in English) "
+                f"and {todo['unreviewed']} are not approved in R4."
+            )
+        try:
+            result = render_book(
+                conn, doc_id, s.data_dir, layout=layout, first=first, last=last,
+                out_path=out, log=console.print,
+            )  # fmt: skip
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/]")
+            raise typer.Exit(1) from None
+    console.print(
+        f"Wrote [bold]{result.path}[/]: {result.pages} pages ({result.thai_pages} with Thai) "
+        f"on {result.sheets} sheets, {result.size_mb} MB, in {result.seconds:.0f} s"
+        + (f"; {result.overflow} text areas do not fit (see R4)" if result.overflow else "")
     )

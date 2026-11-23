@@ -154,3 +154,18 @@ ALTER TABLE blocks ADD COLUMN IF NOT EXISTS cells_th      jsonb;   -- table cell
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS tr_flags      text[] NOT NULL DEFAULT '{}';
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS tr_source     text;
 ALTER TABLE blocks ADD COLUMN IF NOT EXISTS tr_key        text;
+
+-- v4 (M4): the book's outline (PDF bookmarks), with Thai titles for the bilingual PDF.
+CREATE TABLE IF NOT EXISTS outline_entries (
+    id        bigserial PRIMARY KEY,
+    doc_id    int NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    seq       int NOT NULL,                 -- order in the outline
+    level     int NOT NULL,                 -- 1 = top level
+    page_no   int NOT NULL,
+    title_en  text NOT NULL,
+    title_th  text,
+    tr_source text,                         -- heading|tm|mt|human
+    tr_key    text,
+    tr_flags  text[] NOT NULL DEFAULT '{}',
+    UNIQUE (doc_id, seq)
+);

@@ -4,7 +4,7 @@ The original page is copied; only the English text that has a translation is
 removed (boxes, table shading, code and images stay), and the Thai is drawn in
 the same places. Thai needs word boundaries for line breaks (PyThaiNLP inserts
 zero-width spaces) and proper shaping for stacked vowels and tone marks (MuPDF's
-HTML layout uses HarfBuzz).
+HTML layout uses HarfBuzz). Afterwards ``fix_text_layer`` makes the Thai copyable.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 FONT_DIR = Path(__file__).parent / "fonts"
-RENDERER_VERSION = "1"
+RENDERER_VERSION = "3"  # 2: widening, never-drop, text-layer fix, TOC; 3: ligatures
 ZWSP = chr(0x200B)
 THAI_RUN = re.compile("[" + chr(0x0E00) + "-" + chr(0x0E7F) + "]+")
 TAG_HTML = {
@@ -71,14 +71,17 @@ def _marker_prefix(marker: str | None) -> str:
     return "• " if marker in BULLETS else f"{html.escape(marker, quote=False)} "
 
 
-def render_thai_page(pdf_path: str | Path, page_no: int, blocks: list[dict]):
-    """Returns (one-page pymupdf.Document, list[Fit]). ``blocks`` are rows of the
-    blocks table for this page (x0..y1, role, style, markup_th, cells_th, translate)."""
+def render_thai_page(pdf, page_no: int, blocks: list[dict]):
+    """Returns (one-page pymupdf.Document, list[Fit]). ``pdf`` is the book (a path or
+    an open document); ``blocks`` are rows of the blocks table for this page
+    (x0..y1, role, style, markup_th, cells_th, translate)."""
     import pymupdf
 
     from pdftr.ingest.pdf_spans import fill_boxes
+    from pdftr.render.contents import exclusions, is_contents
+    from pdftr.render.textlayer import fix_text_layer
 
-    src = pymupdf.open(str(pdf_path))
+    src = pdf if isinstance(pdf, pymupdf.Document) else pymupdf.open(str(pdf))
     doc = pymupdf.open()
     doc.insert_pdf(src, from_page=page_no - 1, to_page=page_no - 1)
     page = doc[0]
@@ -91,6 +94,9 @@ def render_thai_page(pdf_path: str | Path, page_no: int, blocks: list[dict]):
     for b in blocks:
         rect = rects[b["id"]]
         style = b.get("style") or {}
+        if is_contents(b) and b.get("cells_th"):
+            jobs.extend(_contents_jobs(page, b, b["cells_th"], exclusions(blocks)))
+            continue
         if b["role"] == "table" and b.get("cells_th"):
             jobs.extend(_table_jobs(page, b, b["cells_th"]))
             continue
@@ -141,6 +147,8 @@ def render_thai_page(pdf_path: str | Path, page_no: int, blocks: list[dict]):
         if spare < 0:  # nothing was drawn: draw it at whatever size fits, never lose text
             page.insert_htmlbox(target, body, css=css, archive=archive, scale_low=0)
         fits.append(Fit(bid, round(scale, 2), spare < 0))
+    if jobs:
+        fix_text_layer(doc)
     return doc, fits
 
 
@@ -168,15 +176,52 @@ def _inset(r, frac: float = 0.25):
     return pymupdf.Rect(r.x0 + 0.3, r.y0 + h, r.x1 - 0.3, r.y1 - h)
 
 
+def _contents_jobs(page, block: dict, cells_th: dict, exclude: list) -> list:
+    """Contents entries: the Thai title replaces the English one, the page number stays."""
+    import pymupdf
+
+    from pdftr.render.contents import entries, key
+
+    jobs = []
+    rect = (block["x0"], block["y0"], block["x1"], block["y1"])
+    for e in entries(page, rect, exclude):
+        thai = cells_th.get(key(e.title))
+        if not thai:
+            continue
+        first, last = e.rects[0], e.rects[-1]
+        target = pymupdf.Rect(first[0], first[1] - 1.5, e.right, last[3] + 1.5)
+        weight = " font-weight: bold;" if e.bold else ""
+        css = BASE_CSS + (
+            f"body {{font-size: {e.size:.1f}pt; line-height: 1.25; color: #{e.color:06x};{weight}}}"
+        )
+        redact = [_inset(pymupdf.Rect(*r)) for r in e.rects]
+        jobs.append((block["id"], redact, target, to_html(html.escape(thai, quote=False)), css))
+    return jobs
+
+
+def _toc_right(rect, cells: list[dict], block: dict) -> float:
+    """Right edge for a contents title: the next cell on its line, or the block's edge."""
+    nxt = [
+        c["bbox"][0]
+        for c in cells
+        if c["bbox"][0] >= rect.x1 - 1 and c["bbox"][1] < rect.y1 and c["bbox"][3] > rect.y0
+    ]
+    return max(rect.x1, min(nxt) - 6 if nxt else block["x1"] - 2)
+
+
 def _table_jobs(page, block: dict, cells_th: dict) -> list:
     import pymupdf
 
     jobs = []
-    for cell in (block.get("style") or {}).get("cells") or []:
+    cells = [c for c in (block.get("style") or {}).get("cells") or [] if c.get("bbox")]
+    for cell in cells:
         thai = cells_th.get(f"{cell['row']},{cell['col']}")
-        if not thai or not cell.get("bbox"):
+        if not thai:
             continue
         crect = pymupdf.Rect(*cell["bbox"])
+        right = crect.x1 - 3
+        if block["role"] == "toc" or block.get("page_kind") == "toc":  # up to the page number
+            right = max(right, _toc_right(crect, cells, block))
         data = page.get_text("dict", clip=crect)
         lines = [
             ln
@@ -188,11 +233,12 @@ def _table_jobs(page, block: dict, cells_th: dict) -> list:
         if not lines:
             continue
         spans = [s for ln in lines for s in ln["spans"] if s["text"].strip()]
-        size = max(spans, key=lambda s: len(s["text"]))["size"]
-        color = f"#{max(spans, key=lambda s: len(s['text']))['color']:06x}"
+        main = max(spans, key=lambda s: len(s["text"]))
+        size, color = main["size"], f"#{main['color']:06x}"
         first = pymupdf.Rect(lines[0]["bbox"])
-        target = pymupdf.Rect(first.x0, first.y0 - 1.5, crect.x1 - 3, crect.y1 - 1)
-        weight = " font-weight: bold;" if cell.get("header") else ""
+        target = pymupdf.Rect(first.x0, first.y0 - 1.5, right, crect.y1 - 1)
+        bold = main["flags"] & 16 or any(w in main["font"] for w in ("Bold", "Black", "Heavy"))
+        weight = " font-weight: bold;" if bold else ""
         css = BASE_CSS + (
             f"body {{font-size: {size:.1f}pt; line-height: 1.35; color: {color};{weight}}}"
         )

@@ -37,7 +37,7 @@
            data-chunk="{{ b.chunk_id }}"><span class="tag">{{ b.n }}</span></div>
       {% endif %}{% endfor %}
     </div>
-    <p class="legend">The Thai page is a preview of the bilingual PDF's right side. Headings, running headers and table cells are translated too; only chunks are reviewed here.</p>
+    <p class="legend">The Thai page is a preview of the bilingual PDF's right side. Headings, the page header, contents and table cells are listed under “Other text on this page”.</p>
   </section>
 
   <section class="pane chunk-pane" aria-label="Thai chunks">
@@ -68,6 +68,7 @@
         <p class="empty">No chunks on this page{% if page.kind != "body" %} ({{ page.kind }} page){% endif %}.</p>
       {% endfor %}
     </div>
+    {% include "_other_th.html" %}
   </section>
 </div>
 {% endblock %}

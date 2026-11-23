@@ -66,6 +66,11 @@ def sample_pdf(tmp_path):
     for page_no in (1, 2):
         page = pdf.new_page(width=612, height=792)
         page.insert_text((50, 60), f"Sample page {page_no}", fontsize=10)
+    contents = pdf[1]  # two contents lines, for tests that add a contents block (40, 295, 420, 340)
+    for y, title, number in ((310, "Shells", "1"), (330, "Working with files", "2")):
+        contents.insert_text((50, y), title, fontsize=10)
+        contents.insert_text((400, y), number, fontsize=10)
+    pdf.set_toc([[1, "Shells", 1], [2, "Subshells", 2]])
     path = tmp_path / "sample.pdf"
     pdf.save(path)
     return str(path)
