@@ -1,7 +1,8 @@
 # pdftr: English textbook PDF → bilingual EN/TH PDF + pgvector
 
 See [SPEC.md](SPEC.md) for the design and milestones.
-Status: **M1 (ingest), M2 (review page for R1–R3) and M3 (translation + R4) done.**
+Status: **M1–M6 done**: ingest, review steps R1–R5, translation with Typhoon or Claude,
+the bilingual PDF, embeddings and search. Linux server: [docs/linux.md](docs/linux.md).
 
 ## Setup (Windows, PowerShell)
 
@@ -102,6 +103,32 @@ under load. The core temperature is what `nvidia-smi` and most tools report.
 - **`pdftr render-page <doc> <page>`** writes one Thai page as PNG and PDF.
 - **Model license:** the Typhoon Translate model card lists Apache-2.0 in its metadata but the Gemma license in its text, plus the OpenTyphoon terms of use. That's fine for this personal tool; check both before any commercial use.
 
+### Claude as the translator (M6)
+
+Typhoon (on your GPU, free) is the default. Claude, through the Anthropic API, translates more accurately: it follows glossary rules and keeps names and code more reliably. It also runs several requests at once and needs no GPU. Set it up once in `.env`:
+
+```ini
+PDFTR_TRANSLATE_ENGINE=claude      # or keep typhoon and pass --engine claude per run
+ANTHROPIC_API_KEY=sk-ant-...       # or sign in once with `ant auth login` instead
+PDFTR_CLAUDE_MODEL=claude-opus-5-5 # default; claude-sonnet-5-5 or claude-haiku-5-5 cost less
+PDFTR_CLAUDE_EFFORT=low            # thinking depth per request: low is plenty for translation
+PDFTR_CLAUDE_WORKERS=4             # requests at a time
+```
+
+```powershell
+.venv\Scripts\pdftr translate 1 --engine claude --pages 15-17   # try a few pages first
+```
+
+- **Usage report:** each run prints its token use and an estimated cost at list prices.
+- **Cost:** a rough estimate for the whole 786-page CompTIA book (about 290,000 words) at list prices:
+  - `claude-opus-5-5`: about $40–60;
+  - `claude-sonnet-5-5`: about $20–30;
+  - `claude-haiku-5-5`: about $2.
+- **Refusals:** on Opus and Sonnet, a request the model refuses is retried on a fallback model, which the API does server-side. A text that is still refused stays English and gets the `refused` flag in R4.
+- **Switching engines:** everything you approved in R4 is kept. Only unapproved Thai is translated again (`--force` re-translates all, but your own edits still win). Each engine has its own translation memory.
+- **Key:** `.env` is never committed, and the key is never printed.
+- **Review page:** with Claude configured, the R3 **Suggest** and R4 **Re-translate** buttons use Claude too.
+
 ## Bilingual PDF (M4)
 
 ```powershell
@@ -144,7 +171,8 @@ under load. The core temperature is what `nvidia-smi` and most tools report.
 
 | Command | Does |
 |---|---|
-| `pdftr translate <doc> [--pages 15-24] [--force]` | Translate (after R3; any time with `--pages`) |
+| `pdftr translate <doc> [--pages 15-24] [--engine claude] [--force]` | Translate (after R3; any time with `--pages`) |
+| `pdftr relocate <folder>` | Point books at their PDFs in another folder (after moving machines) |
 | `pdftr ollama status` / `pdftr ollama pull` | Check Ollama / download the translation model |
 | `pdftr render <doc> [--layout alternate] [--pages 15-34] [--out file.pdf]` | Build the bilingual PDF |
 | `pdftr embed <doc> [--force]` | Embed the reviewed chunks after R5 (only changes on a re-run) |

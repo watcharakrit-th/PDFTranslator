@@ -132,6 +132,22 @@ def ingest(
     console.print(table)
 
 
+@app.command()
+def relocate(
+    folder: Path = typer.Argument(..., exists=True, file_okay=False, help="Folder with the PDFs"),
+) -> None:
+    """Point documents at their PDFs in another folder, e.g. after moving to a server.
+    Only a file with the same content as at ingest is accepted."""
+    from pdftr.db import connect
+    from pdftr.ingest.store import relocate_documents
+
+    with connect() as conn:
+        results = relocate_documents(conn, folder)
+    for doc, status in results:
+        colour = {"moved": "green", "already here": "dim"}.get(status, "yellow")
+        console.print(f"[{colour}]{status:>14}[/]  {doc['id']}: {doc['file_name']}")
+
+
 # --------------------------------------------------------------------------- inspect
 @app.command()
 def docs() -> None:
@@ -429,18 +445,28 @@ def translate(
     pages: str = typer.Option(
         None, "--pages", "-p", help="Only these pages, e.g. 15-24 (also works before R3)"
     ),
-    force: bool = typer.Option(False, help="Translate again even where nothing changed"),
+    engine_name: str = typer.Option(
+        None, "--engine", "-e", help="typhoon (this PC) or claude (Anthropic API); default: .env"
+    ),
+    force: bool = typer.Option(
+        False, help="Translate again even where nothing changed (also Thai approved in R4)"
+    ),
 ) -> None:
-    """Translate a document after R3. Resumable (Ctrl+C keeps what is done); keeps the GPU cool."""
+    """Translate a document after R3. Resumable (Ctrl+C keeps what is done).
+
+    Typhoon runs on this PC and keeps the GPU cool; Claude runs several requests at once
+    over the Anthropic API and reports its token use. Thai approved in R4 is kept.
+    """
     from pdftr.db import connect, init_schema
-    from pdftr.gpu import GpuGuard, GpuTooHot
     from pdftr.settings import configure_environment, get_settings
-    from pdftr.translate.engine import make_engine
-    from pdftr.translate.ollama import OllamaServer
-    from pdftr.translate.runner import translate_document
+    from pdftr.translate.engine import ENGINES
 
     s = get_settings()
     configure_environment(s)
+    name = engine_name or s.translate_engine
+    if name not in ENGINES:
+        console.print(f"[red]--engine must be one of: {', '.join(ENGINES)}[/]")
+        raise typer.Exit(2)
     first, last = parse_pages(pages)
     with connect() as conn:
         init_schema(conn)
@@ -460,47 +486,97 @@ def translate(
                 "[yellow]Preview:[/] the glossary is not final yet. Pages translated "
                 "now are re-translated automatically where the glossary changes."
             )
-        guard = GpuGuard.from_settings(s, log=console.print)
-        if not guard.available:
-            console.print("[red]Cannot read the GPU temperature[/], so translation will not run.")
-            raise typer.Exit(1)
-        _gpu_ready(s, guard)
-        try:
-            with OllamaServer(s, log=console.print) as client:
-                if not client.has_model(s.translate_model):
-                    console.print("Downloading the translation model (about 2.5 GB)...")
-                    client.pull(s.translate_model, progress=lambda _msg: None)
-                engine = make_engine(s, client, guard)
-                try:
-                    summary = translate_document(
-                        conn,
-                        doc_id,
-                        engine,
-                        first=first,
-                        last=last,
-                        force=force,
-                        guard=guard,
-                        log=console.print,
-                    )
-                finally:
-                    client.unload(s.translate_model)  # free the GPU now
-        except KeyboardInterrupt:
-            console.print(
-                "[yellow]Stopped.[/] Finished pieces are saved; run the same "
-                "command again to continue."
-            )
-            raise typer.Exit(130) from None
-        except GpuTooHot as exc:
-            console.print(
-                f"[red]Stopped to protect the GPU:[/] {exc}, even on a short piece after "
-                "cooling down. Finished pieces are saved. Lower the GPU power limit "
-                "(README: GPU safety) before running again."
-            )
-            raise typer.Exit(3) from None
+        run = _translate_with_claude if name == "claude" else _translate_with_typhoon
+        summary = run(conn, s, doc_id, first, last, force)
     table = Table("item", "value", show_header=False)
     for key, value in summary.items():
         table.add_row(key, str(value))
     console.print(table)
+
+
+def _translate_with_typhoon(conn, s, doc_id: int, first: int, last: int, force: bool) -> dict:
+    from pdftr.gpu import GpuGuard, GpuTooHot
+    from pdftr.translate.engine import make_engine
+    from pdftr.translate.ollama import OllamaServer
+    from pdftr.translate.runner import translate_document
+
+    guard = GpuGuard.from_settings(s, log=console.print)
+    if not guard.available:
+        console.print("[red]Cannot read the GPU temperature[/], so translation will not run.")
+        raise typer.Exit(1)
+    _gpu_ready(s, guard)
+    try:
+        with OllamaServer(s, log=console.print) as client:
+            if not client.has_model(s.translate_model):
+                console.print("Downloading the translation model (about 2.5 GB)...")
+                client.pull(s.translate_model, progress=lambda _msg: None)
+            engine = make_engine(s, client, guard, name="typhoon")
+            try:
+                return translate_document(
+                    conn, doc_id, engine, first=first, last=last, force=force, guard=guard,
+                    log=console.print,
+                )  # fmt: skip
+            finally:
+                client.unload(s.translate_model)  # free the GPU now
+    except KeyboardInterrupt:
+        console.print(
+            "[yellow]Stopped.[/] Finished pieces are saved; run the same command again to continue."
+        )
+        raise typer.Exit(130) from None
+    except GpuTooHot as exc:
+        console.print(
+            f"[red]Stopped to protect the GPU:[/] {exc}, even on a short piece after "
+            "cooling down. Finished pieces are saved. Lower the GPU power limit "
+            "(README: GPU safety) before running again."
+        )
+        raise typer.Exit(3) from None
+
+
+def _translate_with_claude(conn, s, doc_id: int, first: int, last: int, force: bool) -> dict:
+    import anthropic
+
+    from pdftr.translate.engine import make_engine
+    from pdftr.translate.runner import translate_document
+
+    engine = make_engine(s, name="claude")
+    console.print(
+        f"Claude: {engine.model}, effort {engine.effort}, {engine.workers} requests at a time"
+    )
+    try:
+        summary = translate_document(
+            conn, doc_id, engine, first=first, last=last, force=force,
+            database_url=s.database_url, log=console.print,
+        )  # fmt: skip
+    except KeyboardInterrupt:
+        console.print(
+            "[yellow]Stopped.[/] Finished pieces are saved; run the same command again to continue."
+        )
+        console.print(engine.summary())
+        raise typer.Exit(130) from None
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
+        console.print(
+            f"[red]Claude rejected the credentials[/] ({exc.status_code}). Put your key in "
+            ".env as ANTHROPIC_API_KEY=..., or sign in with `ant auth login`."
+        )
+        raise typer.Exit(1) from None
+    except anthropic.NotFoundError:
+        console.print(
+            f"[red]Unknown Claude model[/] {engine.model!r} (PDFTR_CLAUDE_MODEL in .env)."
+        )
+        raise typer.Exit(1) from None
+    except (
+        anthropic.RateLimitError,
+        anthropic.APIStatusError,
+        anthropic.APIConnectionError,
+    ) as exc:
+        console.print(
+            f"[red]Claude is not answering[/] ({type(exc).__name__}) even after retries. "
+            "Finished pieces are saved; run the same command again later to continue."
+        )
+        console.print(engine.summary())
+        raise typer.Exit(1) from None
+    console.print(engine.summary())
+    return summary
 
 
 @app.command("render-page")

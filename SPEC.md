@@ -65,7 +65,7 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 
 ## 5. Translation
 
-- **Pluggable engine.** `typhoon` is the default: Typhoon Translate 1.5 (4B) running on this PC through Ollama. `claude` (Anthropic API) can be added later without changing the rest.
+- **Pluggable engine.** `typhoon` is the default: Typhoon Translate 1.5 (4B), running on this PC through Ollama. `claude` (Anthropic API, M6) can replace it per run (`--engine claude`) or in `.env`; the rest of the pipeline is the same.
 - Each request includes only the glossary rules for terms that appear in that text.
 - Inline code, URLs and paths are replaced with placeholders before translation and restored after.
 - Each output is checked: placeholders intact, no untranslated English sentences, reasonable length. Failures are flagged for R4.
@@ -111,7 +111,7 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 
 ## 9. Platform
 
-- **OS:** Windows 10 now, Linux server later. The code is cross-platform Python 3.12, managed with `uv`. Postgres runs in Docker and Ollama on both.
+- **OS:** Windows 10 now, Linux server later ([docs/linux.md](docs/linux.md)). The code is cross-platform Python 3.12, managed with `uv`. Postgres runs in Docker, and Ollama runs on both. The tests run on Ubuntu in GitHub Actions for every pull request.
 - **GPU:** RTX 2070 SUPER, 8 GB, shared by Docling, Typhoon and BGE-M3, one at a time. Each stage releases the GPU when it finishes.
 - **GPU safety:** all limits apply to the GPU **hot spot**, read through NVAPI, which runs up to 25 °C above the core temperature. New work waits at 75 °C until 65 °C, and a translation request stops at 90 °C. The card runs with a **150 W power limit** (set with `nvidia-smi -pl 150`; the default is 235 W). See README › GPU safety.
 - **One-time downloads:** about 10 GB in total:
@@ -135,7 +135,7 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 | M3 ✅ 2026-11-22 | Typhoon engine, translation memory, R4 with Thai page preview, hot-spot GPU guard | Get a fully translated, reviewed book |
 | M4 ✅ 2026-11-23 | Full-book renderer, side-by-side + alternate layouts, bookmarks, text-layer fix | Read the bilingual PDF |
 | M5 ✅ 2026-11-23 | BGE-M3 embedding, R5, `search` | Search your books in Thai or English |
-| M6 | Claude engine, Linux deployment guide | Switch engines, move to the server |
+| M6 ✅ 2026-11-23 | Claude engine, Linux deployment guide | Switch engines, move to the server |
 
 ## 11. Prototype result
 
@@ -267,7 +267,24 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 | Example: "ใครเป็นคนสร้างลินุกซ์" | The History of Linux (p. 13), then the review questions on Linus Torvalds and UNIX's creators |
 | Example: "how do I tell which kernel version is stable" | "production kernels … declared stable" (p. 5) |
 
-## 17. Open items
+## 17. M6 results
+
+- **Claude engine** (`translate/claude.py`):
+  - **Request:** one Messages API request per piece of text, with a fixed system prompt and a user message holding the numbered rules and the text. The model is `claude-opus-5-5` by default, at effort `low`.
+  - **Refusals:** on models that support it, the server-side refusal fallback is on. A text still declined stays English, is flagged `refused` for R4, and is never stored in the translation memory.
+  - **Retries:** the SDK retries rate limits and server errors (6 tries). A failure that persists stops the run cleanly, and the next run resumes.
+- **Parallel requests:** the runner sends Claude 4 requests at a time (`PDFTR_CLAUDE_WORKERS`). Worker threads only translate; the main thread writes and commits every result. This covers chunks, table cells and contents entries. Typhoon stays at one request at a time, under the GPU guard.
+- **Approved Thai is kept:** `pdftr translate` no longer replaces Thai you approved in R4 unless you pass `--force`. Switching engines therefore keeps your review.
+- **Cost:** each run prints its token use and an estimated cost at list prices. A rough estimate for the whole CompTIA book (about 290,000 words): Opus 5.5 about $40–60, Sonnet 5.5 about $20–30, Haiku 5.5 about $2.
+- **Linux:**
+  - [docs/linux.md](docs/linux.md) covers install, settings, moving the database from Windows, tmux, the SSH-tunnelled review page and backups;
+  - `scripts/env.sh` mirrors `env.ps1`;
+  - `pyproject.toml` no longer hard-codes a Windows cache path;
+  - `pdftr relocate <folder>` re-points books after a move, by file content;
+  - a GitHub Actions workflow runs lint and the full test suite on Ubuntu with pgvector.
+- **Not yet measured:** a live Claude run. There is no API key on this PC yet, so the engine is tested against a fake client.
+
+## 18. Open items
 
 - **Power limit:** the 150 W limit resets at every reboot, and GPU commands now refuse to start until it is re-applied (`PDFTR_GPU_MAX_POWER_W`). The README has a one-line scheduled task that re-applies it at sign-in. The fans stay off below about 60 °C (core) and reached 51–56% in the tests. A custom fan curve, or fresh thermal paste, would cool the GPU further, because a 25 °C gap between core and hot spot is large.
 - **Links:** the book's internal links (for example, from the contents to a chapter) are not carried over into the bilingual PDF. Bookmarks and page labels handle navigation.

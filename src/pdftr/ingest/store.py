@@ -176,3 +176,31 @@ def finish_job(
         (status, Jsonb(progress), error, job_id),
     )
     conn.commit()
+
+
+def relocate_documents(conn, folder) -> list[tuple[dict, str]]:
+    """Point documents at their PDFs in ``folder`` (after moving to another machine).
+
+    A file counts only when its content matches the hash recorded at ingest.
+    Returns (document, "moved" | "already here" | "different file" | "not found").
+    """
+    from pathlib import Path
+
+    from pdftr.ingest.pipeline import sha256_file
+
+    results = []
+    for d in conn.execute("SELECT id, file_name, file_path, file_hash FROM documents ORDER BY id"):
+        candidate = Path(folder) / d["file_name"]
+        if not candidate.is_file():
+            results.append((d, "not found"))
+        elif sha256_file(candidate) != d["file_hash"]:
+            results.append((d, "different file"))
+        elif str(candidate.resolve()) == d["file_path"]:
+            results.append((d, "already here"))
+        else:
+            conn.execute(
+                "UPDATE documents SET file_path=%s, updated_at=now() WHERE id=%s",
+                (str(candidate.resolve()), d["id"]),
+            )
+            results.append((d, "moved"))
+    return results

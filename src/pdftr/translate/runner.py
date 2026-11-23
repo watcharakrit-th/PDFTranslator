@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import re
+import threading
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -53,6 +54,7 @@ class Unit:
     page: int
     key: str | None  # tr_key of the current translation
     has_th: bool
+    approved: bool = False  # Thai approved in R4: not replaced unless forced
 
 
 @dataclass
@@ -73,7 +75,7 @@ def plan_units(conn: psycopg.Connection, doc_id: int, first: int, last: int):
     """Translation units in reading order, plus code chunks (copied) and table blocks."""
     chunks = conn.execute(
         """SELECT id, kind, flags, markup_en, text_en, block_ids, page_start, tr_key,
-                  markup_th IS NOT NULL AS has_th
+                  markup_th IS NOT NULL AS has_th, review_th = 'approved' AS approved
            FROM chunks WHERE doc_id=%s AND page_start BETWEEN %s AND %s ORDER BY ord, part""",
         (doc_id, first, last),
     ).fetchall()
@@ -92,7 +94,12 @@ def plan_units(conn: psycopg.Connection, doc_id: int, first: int, last: int):
             mcq_blocks.update(c["block_ids"])
         elif c["kind"] in TRANSLATED_KINDS:
             markup = c["markup_en"] or html.escape(c["text_en"], quote=False)
-            units.append(Unit("chunks", c["id"], markup, c["page_start"], c["tr_key"], c["has_th"]))
+            units.append(
+                Unit(
+                    "chunks", c["id"], markup, c["page_start"], c["tr_key"], c["has_th"],
+                    c["approved"],
+                )
+            )  # fmt: skip
     blocks = conn.execute(
         """SELECT b.id, b.role, b.page_no, b.markup_en, b.text_en, b.tr_key,
                   b.markup_th IS NOT NULL AS has_th, p.kind AS page_kind
@@ -174,6 +181,7 @@ def translate_text(
     present = present_terms(prot.text, glossary.terms)
     thai = None if (force or retry) else memory.mt_get(conn, key)
     outcome = Outcome("tm")
+    engine_flags: tuple[str, ...] = ()  # e.g. "refused": declined, so the English stays
     if thai is None:
         try:
             result = engine.translate(prot.text, rules, retry=retry)
@@ -184,11 +192,13 @@ def translate_text(
                     conn, engine, glossary, shorter, key, force, retry, SHORT_WORDS
                 )
             result = engine.translate(prot.text, rules, retry=retry)  # cooled: last try
+        engine_flags = result.flags
         thai = put_back_kept_names(drop_echo(prot.text, result.text), present)
         outcome = Outcome("mt", result.seconds)
     markup_th, flags = restore(thai, prot, glossary.thai)
-    flags += check(prot.text, thai, present)
-    if outcome.source == "mt" and "placeholder_missing" in flags and not retry:
+    flags += check(prot.text, thai, present) + list(engine_flags)
+    refused = "refused" in engine_flags
+    if outcome.source == "mt" and "placeholder_missing" in flags and not retry and not refused:
         # one retry at a higher temperature; keep whichever result has fewer problems
         try:
             result = engine.translate(prot.text, rules, retry=True)
@@ -197,11 +207,11 @@ def translate_text(
         if result is not None:
             thai_2 = put_back_kept_names(drop_echo(prot.text, result.text), present)
             markup_2, flags_2 = restore(thai_2, prot, glossary.thai)
-            flags_2 += check(prot.text, thai_2, present)
+            flags_2 += check(prot.text, thai_2, present) + list(result.flags)
             outcome = Outcome("mt", outcome.seconds + result.seconds)
             if len(flags_2) < len(flags):
                 thai, markup_th, flags = thai_2, markup_2, flags_2
-    if outcome.source == "mt":
+    if outcome.source == "mt" and "refused" not in flags:  # never remember a refusal
         memory.mt_put(conn, key, prot.text, thai, engine.name)
     return markup_th, key, Outcome(outcome.source, outcome.seconds, tuple(sorted(set(flags))))
 
@@ -270,6 +280,58 @@ def save_unit(
 
 
 # ------------------------------------------------------------------- whole document
+class Pool:
+    """Run ``fn(conn, item)`` for many items: one at a time on the main connection, or in
+    ``workers`` threads, each with its own connection (needs ``database_url``). Results
+    come back in the main thread, which does all writing other than the translation
+    memory, so a stop loses nothing that was already returned."""
+
+    def __init__(
+        self, conn: psycopg.Connection, workers: int = 1, database_url: str | None = None
+    ) -> None:
+        self.conn = conn
+        self.workers = workers if database_url else 1
+        self.database_url = database_url
+
+    def map(self, fn, items):
+        items = list(items)
+        if self.workers <= 1 or len(items) <= 1:
+            for item in items:
+                yield item, fn(self.conn, item)
+            return
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from pdftr.db import connect
+
+        local = threading.local()
+        opened: list[psycopg.Connection] = []
+        lock = threading.Lock()
+
+        def run(item):
+            c = getattr(local, "conn", None)
+            if c is None:
+                c = local.conn = connect(self.database_url)
+                with lock:
+                    opened.append(c)
+            try:
+                result = fn(c, item)
+            except BaseException:
+                c.rollback()
+                raise
+            c.commit()
+            return item, result
+
+        executor = ThreadPoolExecutor(max_workers=self.workers)
+        try:
+            futures = [executor.submit(run, item) for item in items]
+            for future in as_completed(futures):
+                yield future.result()
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+            for c in opened:
+                c.close()
+
+
 def translate_document(
     conn: psycopg.Connection,
     doc_id: int,
@@ -279,11 +341,14 @@ def translate_document(
     last: int = 10**9,
     force: bool = False,
     guard: GpuGuard | None = None,
+    database_url: str | None = None,
     log: Callable[[str], None] = print,
 ) -> dict:
     """Translate pages ``first``..``last``. The engine guards the GPU itself (see
     ``GuardedEngine``); ``guard`` is only read for the log and the summary.
-    Every finished piece is committed at once, so a stop loses nothing."""
+    Engines with ``workers`` > 1 (Claude) run that many requests at once, given the
+    ``database_url`` for their connections. Thai you approved in R4 is kept unless
+    ``force``. Every finished piece is committed at once, so a stop loses nothing."""
     glossary = Glossary(load_glossary(conn, doc_id))
     units, copies, tables = plan_units(conn, doc_id, first, last)
     conn.execute(
@@ -295,37 +360,41 @@ def translate_document(
     stats: Counter = Counter()
     flagged = 0
     started = time.monotonic()
+    pool = Pool(conn, getattr(engine, "workers", 1), database_url)
+    todo = [u for u in units if force or not u.approved]
+    if len(todo) < len(units):
+        stats["approved_kept"] = len(units) - len(todo)
     log(
-        f"{len(units)} pieces to check, {len(copies)} code blocks copied, "
-        f"{len(tables)} tables; glossary: {len(glossary.terms)} terms"
+        f"{len(units)} pieces to check ({len(units) - len(todo)} approved in R4 are kept), "
+        f"{len(copies)} code blocks copied, {len(tables)} tables; "
+        f"glossary: {len(glossary.terms)} terms"
+        + (f"; {pool.workers} requests at a time" if pool.workers > 1 else "")
     )
-    for i, unit in enumerate(units, 1):
-        markup_th, key, outcome = translate_text(
-            conn,
-            engine,
-            glossary,
-            unit.markup,
-            force=force,
-            current_key=unit.key,
+
+    def work(c: psycopg.Connection, unit: Unit):
+        return translate_text(
+            c, engine, glossary, unit.markup, force=force, current_key=unit.key,
             has_th=unit.has_th,
-        )
+        )  # fmt: skip
+
+    for i, (unit, (markup_th, key, outcome)) in enumerate(pool.map(work, todo), 1):
         stats[outcome.source] += 1
         if markup_th is not None:
             save_unit(conn, unit, markup_th, key, outcome)
             flagged += bool(outcome.flags)
         conn.commit()
-        if i % 10 == 0 or i == len(units):
+        if i % 10 == 0 or i == len(todo):
             elapsed = time.monotonic() - started
-            eta = elapsed / i * (len(units) - i)
+            eta = elapsed / i * (len(todo) - i)
             temp = guard.temperature() if guard is not None else None
             log(
-                f"  {i}/{len(units)} · {stats['mt']} translated, {stats['tm'] + stats['human']} "
+                f"  {i}/{len(todo)} · {stats['mt']} translated, {stats['tm'] + stats['human']} "
                 f"from memory, {stats['unchanged']} unchanged · {flagged} flagged · "
                 f"ETA {eta / 60:.0f} min" + (f" · GPU hot spot {temp}°C" if temp else "")
             )
     titles = heading_thai(conn, doc_id)  # contents and bookmarks reuse heading Thai
     stats["table_cells"] = translate_tables(
-        conn, tables, engine, glossary, force=force, titles=titles, log=log
+        conn, tables, engine, glossary, force=force, titles=titles, log=log, pool=pool
     )
 
     def title(markup: str):
@@ -360,43 +429,75 @@ def translate_tables(
     force: bool = False,
     titles: dict[str, str] | None = None,
     log: Callable[[str], None] = lambda _m: None,
+    pool: Pool | None = None,
 ) -> int:
-    """Translate the text cells of tables and contents pages (code-like cells and page
-    numbers stay as they are). A contents title reuses its heading's Thai if known."""
-    count = 0
-    pdf = None
-    for b in conn.execute(
+    """Translate the text cells of tables and the entries of contents pages (code-like
+    cells and page numbers stay as they are). A contents title reuses its heading's
+    Thai if known. Returns how many cells and titles were filled."""
+    pool = pool or Pool(conn)
+    rows = conn.execute(
         """SELECT b.id, b.doc_id, b.page_no, b.role, b.x0, b.y0, b.x1, b.y1, b.style,
                   b.cells_th, p.kind AS page_kind, d.file_path
            FROM blocks b JOIN pages p ON p.doc_id = b.doc_id AND p.page_no = b.page_no
                 JOIN documents d ON d.id = b.doc_id
            WHERE b.id = ANY(%s) ORDER BY b.ord""",
         (block_ids,),
-    ).fetchall():
-        if is_contents(b):
+    ).fetchall()
+    done: dict[int, dict] = {}
+    jobs: list[tuple[int, str, str]] = []  # (block id, key in cells_th, English text)
+    reused = 0
+    pdf = None
+    for b in rows:
+        if is_contents(b):  # entries read from the PDF (see pdftr.render.contents)
             if pdf is None:
                 import pymupdf
 
                 pdf = pymupdf.open(b["file_path"])
-            count = _translate_contents(conn, b, pdf, engine, glossary, force, titles, log, count)
-            continue
-        cells = (b["style"] or {}).get("cells") or []
-        done = dict(b["cells_th"] or {})
-        for cell in cells:
-            text = (cell.get("text") or "").strip()
-            pos = f"{cell['row']},{cell['col']}"
-            if not _translatable_cell(text) or (pos in done and not force):
-                continue
-            markup_th, _key, _outcome = translate_text(
-                conn, engine, glossary, html.escape(text, quote=False), force=force
-            )
-            done[pos] = strip_markup(markup_th or "")
-            count += 1
-            if count % 25 == 0:
-                log(f"  tables and contents: {count} cells")
-            conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done), b["id"]))
-            conn.commit()
-        conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done), b["id"]))
+            filled = done[b["id"]] = {
+                k: v for k, v in (b["cells_th"] or {}).items() if k.startswith("t:")
+            }
+            others = conn.execute(
+                "SELECT role, x0, y0, x1, y1, translate FROM blocks WHERE doc_id=%s AND page_no=%s",
+                (b["doc_id"], b["page_no"]),
+            ).fetchall()
+            rect = (b["x0"], b["y0"], b["x1"], b["y1"])
+            queued = set()
+            for e in entries(pdf[b["page_no"] - 1], rect, exclusions(others)):
+                k = title_key(e.title)
+                if (k in filled and not force) or k in queued or not LETTERS_RE.search(e.title):
+                    continue
+                same = (titles or {}).get(norm_title(e.title))
+                if same:
+                    filled[k] = same
+                    reused += 1
+                else:
+                    jobs.append((b["id"], k, e.title))
+                    queued.add(k)
+        else:
+            filled = done[b["id"]] = dict(b["cells_th"] or {})
+            for cell in (b["style"] or {}).get("cells") or []:
+                text = (cell.get("text") or "").strip()
+                pos = f"{cell['row']},{cell['col']}"
+                if _translatable_cell(text) and (pos not in filled or force):
+                    jobs.append((b["id"], pos, text))
+    for block_id, filled in done.items():
+        conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(filled), block_id))
+    conn.commit()
+
+    def work(c: psycopg.Connection, job: tuple[int, str, str]) -> str:
+        markup_th, _key, _outcome = translate_text(
+            c, engine, glossary, html.escape(job[2], quote=False), force=force
+        )
+        return strip_markup(markup_th or "")
+
+    count = 0
+    for (block_id, k, _text), thai in pool.map(work, jobs):
+        done[block_id][k] = thai
+        conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done[block_id]), block_id))
+        conn.commit()
+        count += 1
+        if count % 25 == 0:
+            log(f"  tables and contents: {count}/{len(jobs)} cells")
     for c in conn.execute(
         "SELECT id, block_ids FROM chunks WHERE kind='table' AND block_ids && %s::bigint[]",
         (block_ids,),
@@ -406,36 +507,7 @@ def translate_tables(
             "translated_at=now() WHERE id=%s",
             (_table_markdown(conn, c["block_ids"]), c["id"]),
         )
-    return count
-
-
-def _translate_contents(conn, b, pdf, engine, glossary, force, titles, log, count) -> int:
-    """A contents block, entry by entry (see pdftr.render.contents); Thai under title keys."""
-    done = {k: v for k, v in (b["cells_th"] or {}).items() if k.startswith("t:")}
-    others = conn.execute(
-        "SELECT role, x0, y0, x1, y1, translate FROM blocks WHERE doc_id=%s AND page_no=%s",
-        (b["doc_id"], b["page_no"]),
-    ).fetchall()
-    page = pdf[b["page_no"] - 1]
-    for e in entries(page, (b["x0"], b["y0"], b["x1"], b["y1"]), exclusions(others)):
-        k = title_key(e.title)
-        if (k in done and not force) or not LETTERS_RE.search(e.title):
-            continue
-        same = (titles or {}).get(norm_title(e.title))
-        if same:
-            done[k] = same
-        else:
-            markup_th, _key, _outcome = translate_text(
-                conn, engine, glossary, html.escape(e.title, quote=False), force=force
-            )
-            done[k] = strip_markup(markup_th or "")
-        count += 1
-        if count % 25 == 0:
-            log(f"  tables and contents: {count} cells")
-        conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done), b["id"]))
-        conn.commit()
-    conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done), b["id"]))
-    return count
+    return count + reused
 
 
 def _translatable_cell(text: str) -> bool:

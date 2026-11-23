@@ -12,6 +12,7 @@ import tempfile
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -45,11 +46,20 @@ class Settings(BaseSettings):
     # time (1.0 = busy at most half the time).
     gpu_rest_ratio: float = 1.0
 
-    # Translation (M3)
+    # Translation (M3): "typhoon" (this PC, Ollama) or "claude" (Anthropic API, M6)
     translate_engine: str = "typhoon"
     translate_model: str = "scb10x/typhoon-translate1.5-4b"
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_exe: Path | None = None  # default: .cache/tools/ollama, then PATH
+
+    # Claude engine (M6). The key is read from ANTHROPIC_API_KEY (in .env or the
+    # environment); without it the SDK uses an `ant auth login` profile if there is one.
+    claude_model: str = "claude-opus-5-5"
+    claude_effort: str = "low"  # thinking depth: low | medium | high | xhigh | max
+    claude_workers: int = 4  # requests at once
+    anthropic_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("PDFTR_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
+    )
 
     # Embeddings (M5): BGE-M3 dense vectors; texts per GPU batch; longer texts are cut.
     embed_model: str = "BAAI/bge-m3"
