@@ -26,6 +26,11 @@
       {% for t in data.rows %}{% if t[review_col] == "pending" %}<input type="hidden" name="ids" value="{{ t.id }}">{% endif %}{% endfor %}
       <button title="Approve the pending terms listed on this page">Approve shown</button>
     </form>
+    {% if step == "r2" %}
+    <button hx-post="/doc/{{ doc.id }}/terms/approve-all"
+            hx-confirm="Approve ALL pending terms of this book, in every tab, with the decisions they have now?"
+            title="Approve every pending term in all tabs">Approve all</button>
+    {% endif %}
     {% if step_state == "current" %}
     <button class="primary" hx-post="/doc/{{ doc.id }}/{{ step }}/complete"
             {% if blocker %}disabled title="{{ blocker }}"{% endif %}>Complete {{ step|upper }} →</button>

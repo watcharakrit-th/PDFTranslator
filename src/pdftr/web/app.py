@@ -458,6 +458,12 @@ def _routes(app: FastAPI) -> None:
                 n = rt.approve_en(conn, doc_id, ids)
         return _toast_and_refresh(f"Approved {n} terms")
 
+    @app.post("/doc/{doc_id}/terms/approve-all")
+    def terms_approve_all(request: Request, doc_id: int):
+        with db(request) as conn:
+            n = rt.approve_all_en(conn, doc_id)
+        return _toast_and_refresh(f"Approved all {n} pending terms")
+
     @app.post("/doc/{doc_id}/terms/add")
     def terms_add(
         request: Request, doc_id: int, term_en: str = Form(...), decision: str = Form("keep_en")

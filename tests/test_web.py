@@ -60,3 +60,20 @@ def test_complete_r1_then_review_terms(client):
 def test_glossary_csv_download(client):
     r = client.get("/glossary.csv")
     assert r.status_code == 200 and "ฐานข้อมูล" in r.text
+
+
+def test_r2_approve_all_terms_then_complete(client, conn):
+    client.post("/doc/1/r1/approve-all", headers=HX)
+    client.post("/doc/1/r1/complete", headers=HX)
+    assert "Approve all" in client.get("/doc/1/r2").text
+    r = client.post("/doc/1/r2/complete", headers=HX)
+    assert r.status_code == 409  # terms still pending
+    r = client.post("/doc/1/terms/approve-all", headers=HX)
+    assert r.status_code == 204 and "Approved all" in r.headers["HX-Trigger"]
+    pending = conn.execute(
+        """SELECT count(*) AS n FROM doc_terms dt JOIN terms t ON t.id = dt.term_id
+           WHERE dt.doc_id=1 AND t.review_en='pending'"""
+    ).fetchone()["n"]
+    assert pending == 0
+    r = client.post("/doc/1/r2/complete", headers=HX)
+    assert r.headers["HX-Redirect"] == "/doc/1/r3"
