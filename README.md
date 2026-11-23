@@ -87,7 +87,8 @@ under load. The core temperature is what `nvidia-smi` and most tools report.
 ## Translation (M3) and R4
 
 - **Engine:** Typhoon Translate 1.5 (4B), running on your GPU through **Ollama**. Ollama is the portable build in `.cache\tools\ollama`, and the model (2.5 GB) is in `.cache\ollama\models`, both on drive D. `pdftr` starts Ollama when it needs it and stops it afterwards, so nothing auto-starts with Windows.
-- **Run:** after R1–R3 are complete, run `pdftr translate <doc>`.
+- **Run:** after R1–R3 are complete, press **Translate all** at the top of R4, or run `pdftr translate <doc>`.
+  - **Translate all** runs inside the review server with the same GPU guard. The page shows the progress, the GPU hot spot and a **Stop** button. You can keep reviewing finished chunks meanwhile, and Thai you edit or approve during the run is not replaced. Stop keeps everything finished, and pressing Translate all again continues from there.
   - **Glossary rules:** each request gets the glossary rules for the terms that appear in its text.
   - **Placeholders:** code, paths and URLs are swapped for placeholders, so the model can't change them.
   - **Checks:** each result is checked for dropped code, English left untranslated, odd length, polite particles and missed glossary terms, including Keep English terms that got translated. Problems become flags in R4.

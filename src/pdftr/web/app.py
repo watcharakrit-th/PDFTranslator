@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
 
 import psycopg
@@ -40,6 +41,7 @@ STEP_URL = {
 }
 
 templates = Jinja2Templates(directory=HERE / "templates")
+_START = threading.Lock()  # "Translate all": check and start one job at a time
 templates.env.filters["markup"] = lambda s: Markup(markup_html(s or ""))
 
 
@@ -67,6 +69,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
+        if app.state.job is not None and app.state.job.running:  # "Translate all" running
+            app.state.job.stop()
+            app.state.job.join(timeout=120)
         if app.state.ollama is not None:  # an Ollama we started for "Re-translate"
             app.state.ollama.stop()
         if getattr(app.state.embedder, "unload", None):  # BGE-M3 loaded for search
@@ -79,6 +84,7 @@ def create_app(
     app.state.engine = engine  # tests pass a fake; otherwise started on first use
     app.state.embedder = embedder  # likewise, for search
     app.state.ollama = None
+    app.state.job = None  # the "Translate all" job (one at a time)
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=allowed_hosts or ["127.0.0.1", "localhost"]
     )
@@ -128,6 +134,31 @@ def _engine(app: FastAPI):
         app.state.ollama = server
         app.state.engine = make_engine(settings, server.client, guard)
     return app.state.engine
+
+
+def _engine_name(app: FastAPI) -> str:
+    """The translator "Translate all" uses (shown before it starts)."""
+    engine = app.state.engine
+    if engine is not None:
+        return getattr(engine, "name", "translator").split("/")[0]
+    return get_settings().translate_engine
+
+
+def _job_for(app: FastAPI, doc_id: int):
+    job = app.state.job
+    return job if job is not None and job.doc_id == doc_id else None
+
+
+def _no_job_running(app: FastAPI) -> None:
+    if app.state.job is not None and app.state.job.running:
+        raise ReviewError("A translation is running: wait for it to finish, or stop it first.")
+
+
+def _after_job(app: FastAPI) -> None:
+    """Free the GPU memory once "Translate all" ends (Ollama itself keeps running)."""
+    if app.state.ollama is not None:
+        with suppress(Exception):  # only tidying up: Ollama may be gone already
+            app.state.ollama.client.unload(get_settings().translate_model)
 
 
 def _api_errors() -> tuple[type[Exception], ...]:
@@ -598,6 +629,8 @@ def _r4_routes(app: FastAPI) -> None:
             if page is None or page not in numbers:
                 page = pending[0] if pending else numbers[0]
             ctx = context(conn, doc, page, only, view)
+            job = _job_for(request.app, doc_id)
+            ctx.update(job=job.view() if job else None, engine_name=_engine_name(request.app))
             flagged = rth.flagged_pages(conn, doc_id)
             chapters = rc.chapters(conn, doc_id, review_col="review_th")
         i = numbers.index(page)
@@ -662,6 +695,7 @@ def _r4_routes(app: FastAPI) -> None:
 
     @app.post("/doc/{doc_id}/chunks/{chunk_id}/th/retranslate")
     def th_retranslate(request: Request, doc_id: int, chunk_id: int):
+        _no_job_running(request.app)
         _gpu_cool_enough()
         engine = _engine(request.app)
         with db(request) as conn:
@@ -693,6 +727,53 @@ def _r4_routes(app: FastAPI) -> None:
             rth.edit_outline_thai(conn, doc_id, entry_id, text)
         return _refresh()
 
+    @app.post("/doc/{doc_id}/translate/start")
+    def translate_start(request: Request, doc_id: int):
+        from pdftr.translate.engine import GuardedEngine
+        from pdftr.web.jobs import TranslationJob
+
+        with db(request) as conn:
+            doc = _doc(conn, doc_id)
+        if doc["stage"] in ("r1_chunks_en", "r2_terms_en", "r3_terms_th"):
+            raise ReviewError("Finish R1–R3 first, so the glossary is final.")
+        with _START:  # two clicks at once must not start two GPU jobs
+            _no_job_running(request.app)
+            engine = _engine(request.app)
+            guard = engine.guard if isinstance(engine, GuardedEngine) else None
+            if guard is not None:
+                problem = guard.power_problem(get_settings().gpu_max_power_w)
+                if problem:
+                    raise ReviewError(problem)
+            url = app.state.database_url or get_settings().database_url
+            app.state.job = TranslationJob(
+                doc_id, engine, url, guard=guard, on_done=lambda: _after_job(app)
+            ).start()
+        return _refresh()
+
+    def job_panel(request: Request, doc_id: int):
+        job = _job_for(request.app, doc_id)
+        if job is None or not job.running:
+            return _refresh()  # it ended: reload once to show the result and the new Thai
+        with db(request) as conn:
+            doc = _doc(conn, doc_id)
+            prog = rth.progress(conn, doc_id)
+        return templates.TemplateResponse(
+            request,
+            "_translate_job.html",
+            _base(request, doc, job=job.view(), prog=prog, engine_name=_engine_name(request.app)),
+        )
+
+    @app.post("/doc/{doc_id}/translate/stop")
+    def translate_stop(request: Request, doc_id: int):
+        job = _job_for(request.app, doc_id)
+        if job is not None:
+            job.stop()
+        return job_panel(request, doc_id)
+
+    @app.get("/doc/{doc_id}/translate/status")
+    def translate_status(request: Request, doc_id: int):
+        return job_panel(request, doc_id)
+
     @app.post("/doc/{doc_id}/r4/approve-page")
     def r4_approve_page(request: Request, doc_id: int, page: int = Form(...)):
         with db(request) as conn:
@@ -713,6 +794,7 @@ def _r4_routes(app: FastAPI) -> None:
 
     @app.post("/doc/{doc_id}/terms/suggest-thai")
     def suggest_thai(request: Request, doc_id: int):
+        _no_job_running(request.app)
         _gpu_cool_enough()
         engine = _engine(request.app)
         with db(request) as conn:

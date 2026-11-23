@@ -94,7 +94,9 @@ def complete(conn: psycopg.Connection, doc_id: int, step: str) -> str:
         raise ReviewError(f"Document {doc_id} not found.")
     stage = STEP_STAGE.get(step)
     if step == "r4" and doc["stage"] == "translate":
-        raise ReviewError(f"The translation has not finished: run `pdftr translate {doc_id}`.")
+        raise ReviewError(
+            f"The translation has not finished: use Translate all, or run `pdftr translate {doc_id}`."
+        )
     if doc["stage"] != stage:
         raise ReviewError(f"{step.upper()} is not the current step.")
     reason = blockers(conn, doc_id, step)

@@ -43,10 +43,7 @@
   <section class="pane chunk-pane" aria-label="Thai chunks">
     <div class="toolbar">
       {% include "_progress_th.html" %}
-      {% if prog.missing %}
-      <p class="banner">{{ prog.missing }} chunks have no Thai yet. Translate the book with
-        <code>pdftr translate {{ doc.id }}</code> (it keeps the GPU cool and can be stopped and resumed).</p>
-      {% endif %}
+      {% include "_translate_job.html" %}
       <div class="row">
         <span class="filters">Show
           <a href="?page={{ page.page_no }}&only=all&view={{ view }}" class="{{ 'on' if only == 'all' }}">all</a>

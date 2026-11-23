@@ -196,6 +196,7 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 - **Checks (flags in R4):** dropped code, mostly English left, odd length, polite particles, an opening explanation, and glossary misses (a Thai term not used, or a Keep English term translated). Each R4 card names the term it means.
 - **Translation memory:** a re-run translates only what changed, and a glossary change re-translates only the text that uses that term. Your R4 edits are reused wherever the same English appears, and always win.
 - **R4 page:** the Thai page preview next to the chunk cards, where you can:
+  - translate everything still without Thai (**Translate all**: a background job in the review server, one at a time, with progress, the GPU hot spot and Stop; per-chunk Re-translate and R3 Suggest wait while it runs, and Thai approved during the run is kept);
   - approve, edit or re-translate a chunk;
   - approve a whole page, chapter or the book;
   - jump to the next pending or flagged page.
