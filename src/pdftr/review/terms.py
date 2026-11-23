@@ -157,6 +157,19 @@ def approve_en(
     return n
 
 
+def approve_all_en(conn: psycopg.Connection, doc_id: int) -> int:
+    """R2: approve every pending term of the document, in every tab, with the decision
+    it has now (keep English / translate / not a term)."""
+    n = conn.execute(
+        """UPDATE terms t SET review_en='approved', reviewed_at=now(), updated_at=now()
+           FROM doc_terms dt
+           WHERE dt.term_id = t.id AND dt.doc_id=%s AND t.review_en='pending'""",
+        (doc_id,),
+    ).rowcount
+    log(conn, doc_id, "r2", "approve_all", f"doc:{doc_id}", count=n)
+    return n
+
+
 def add_term(conn: psycopg.Connection, doc_id: int, term_en: str, decision: str) -> int:
     term_en = re.sub(r"\s+", " ", term_en).strip()
     if not term_en:
