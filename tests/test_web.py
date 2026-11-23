@@ -77,3 +77,24 @@ def test_r2_approve_all_terms_then_complete(client, conn):
     assert pending == 0
     r = client.post("/doc/1/r2/complete", headers=HX)
     assert r.headers["HX-Redirect"] == "/doc/1/r3"
+
+
+def test_r3_approve_all_skips_terms_without_thai(client, conn):
+    client.post("/doc/1/r1/approve-all", headers=HX)
+    client.post("/doc/1/r1/complete", headers=HX)
+    client.post("/doc/1/terms/approve-all", headers=HX)
+    client.post("/doc/1/r2/complete", headers=HX)
+    conn.execute("UPDATE terms SET decision='translate', term_th=NULL WHERE norm='subshell'")
+    conn.commit()
+    assert "Approve all" in client.get("/doc/1/r3").text
+    r = client.post("/doc/1/terms/approve-all", data={"step": "r3"}, headers=HX)
+    assert r.status_code == 204 and "1 still have no Thai" in r.headers["HX-Trigger"]
+    database = conn.execute("SELECT review_th FROM terms WHERE norm='database'").fetchone()
+    subshell = conn.execute("SELECT review_th FROM terms WHERE norm='subshell'").fetchone()
+    assert database["review_th"] == "approved" and subshell["review_th"] == "pending"
+    assert client.post("/doc/1/r3/complete", headers=HX).status_code == 409
+    conn.execute("UPDATE terms SET term_th='ซับเชลล์' WHERE norm='subshell'")
+    conn.commit()
+    client.post("/doc/1/terms/approve-all", data={"step": "r3"}, headers=HX)
+    r = client.post("/doc/1/r3/complete", headers=HX)
+    assert r.status_code == 204 and r.headers["HX-Redirect"] == "/doc/1/r4"

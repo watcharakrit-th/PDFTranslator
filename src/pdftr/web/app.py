@@ -459,9 +459,16 @@ def _routes(app: FastAPI) -> None:
         return _toast_and_refresh(f"Approved {n} terms")
 
     @app.post("/doc/{doc_id}/terms/approve-all")
-    def terms_approve_all(request: Request, doc_id: int):
+    def terms_approve_all(request: Request, doc_id: int, step: str = Form("r2")):
         with db(request) as conn:
-            n = rt.approve_all_en(conn, doc_id)
+            if step == "r3":
+                n, missing = rt.approve_all_th(conn, doc_id)
+            else:
+                n, missing = rt.approve_all_en(conn, doc_id), 0
+        if missing:
+            return _toast_and_refresh(
+                f"Approved {n} Thai terms; {missing} still have no Thai and stay pending"
+            )
         return _toast_and_refresh(f"Approved all {n} pending terms")
 
     @app.post("/doc/{doc_id}/terms/add")
