@@ -1,0 +1,44 @@
+{# "Translate all" in R4: the start button, or the running job (polled every 3 s). #}
+{% set busy = job and job.running %}
+<div id="translate-job" class="job"
+     {% if busy %}hx-get="/doc/{{ doc.id }}/translate/status" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+{% if busy %}
+  <div class="progress">
+    <div class="bar" title="{{ job.percent }}% of the text"><span style="width: {{ job.percent }}%"></span></div>
+    <span>
+      {% if job.state == "stopping" %}<strong>Stopping</strong> after the pieces in progress…
+      {% elif job.phase == "chunks" %}<strong>Translating</strong> {{ job.done }} / {{ job.total }} pieces of text
+        · {{ job.translated }} new · {{ job.memory }} from memory
+        {% if job.flagged %}· <span class="warn">{{ job.flagged }} flagged</span>{% endif %}
+        {% if job.eta %}· about {{ job.eta }} left{% endif %}
+      {% elif job.phase == "starting" %}<strong>Starting</strong> the translator…
+      {% else %}<strong>Translating</strong> the {{ job.phase }}…{% endif %}
+      {% if job.gpu_c %}· GPU hot spot {{ job.gpu_c }}°C{% endif %}
+    </span>
+    <span class="spacer"></span>
+    {% if job.state == "running" %}
+    <button hx-post="/doc/{{ doc.id }}/translate/stop" hx-target="#translate-job" hx-swap="outerHTML"
+            title="Let the pieces in progress finish, then stop. Everything finished is saved.">Stop</button>
+    {% endif %}
+  </div>
+  {% if job.last %}<p class="muted job-log">{{ job.last }}</p>{% endif %}
+{% else %}
+  {% if job and job.state == "failed" %}
+  <p class="banner">The translation stopped: {{ job.error }}. Everything finished is saved.</p>
+  {% elif job and job.state == "stopped" %}
+  <p class="muted">Stopped. Everything finished is saved; Translate all continues from there.</p>
+  {% endif %}
+  {% if prog.missing or doc.stage == "translate" %}
+  <div class="banner row">
+    <span>{% if prog.missing %}{{ prog.missing }} chunks have no Thai yet.{% else %}The tables, contents and bookmarks are not translated yet.{% endif %}</span>
+    <button class="primary" id="translate-all" hx-post="/doc/{{ doc.id }}/translate/start" hx-disabled-elt="this"
+      {% if engine_name == "claude" %}
+            hx-confirm="Translate everything that has no Thai yet with Claude? This uses the Anthropic API, which is billed per token. Thai you approved is kept."
+      {% else %}
+            hx-confirm="Translate everything that has no Thai yet with Typhoon on the GPU? It takes a while: the guard pauses it whenever the hot spot reaches 75°C. You can keep reviewing meanwhile, and Stop keeps what is done."
+      {% endif %}>Translate all</button>
+    <span class="muted">or run <code>pdftr translate {{ doc.id }}</code></span>
+  </div>
+  {% endif %}
+{% endif %}
+</div>

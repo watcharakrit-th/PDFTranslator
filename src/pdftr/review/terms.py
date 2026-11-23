@@ -265,6 +265,25 @@ def approve_th(
     return n
 
 
+def approve_all_th(conn: psycopg.Connection, doc_id: int) -> tuple[int, int]:
+    """R3: approve every pending Thai term of the document that has its Thai filled in.
+    Returns (approved, still without Thai): those stay pending until they get Thai."""
+    n = conn.execute(
+        """UPDATE terms t SET review_th='approved', reviewed_at=now(), updated_at=now()
+           FROM doc_terms dt
+           WHERE dt.term_id = t.id AND dt.doc_id=%s AND t.decision='translate'
+             AND t.review_th='pending' AND coalesce(t.term_th, '') <> ''""",
+        (doc_id,),
+    ).rowcount
+    missing = conn.execute(
+        """SELECT count(*) AS n FROM doc_terms dt JOIN terms t ON t.id = dt.term_id
+           WHERE dt.doc_id=%s AND t.decision='translate' AND coalesce(t.term_th, '') = ''""",
+        (doc_id,),
+    ).fetchone()["n"]
+    log(conn, doc_id, "r3", "approve_all", f"doc:{doc_id}", count=n, missing=missing)
+    return n, missing
+
+
 def suggest_thai(
     conn: psycopg.Connection, doc_id: int, engine, limit: int = 100
 ) -> tuple[int, str | None]:

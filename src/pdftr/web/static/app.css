@@ -221,6 +221,10 @@ tr.missing .thai input { border-color: var(--warn); }
 @media (max-width: 800px) { .embed-pair { grid-template-columns: 1fr; } }
 .box.thin { border-width: 1px; }
 .banner { margin: 0; padding: 6px 10px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); }
+.job { margin: 6px 0; }
+.job:empty { display: none; }
+.job .banner code { color: var(--ink); }
+.job-log { margin: 2px 0 0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seg a.btn { border-radius: 0; padding: 4px 10px; }
 .seg a.btn:first-child { border-radius: 6px 0 0 6px; }
 .seg a.btn:last-child { border-radius: 0 6px 6px 0; }

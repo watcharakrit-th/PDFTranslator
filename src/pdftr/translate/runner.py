@@ -261,7 +261,7 @@ def save_unit(
                       translated_at=now(),
                       review_th = CASE WHEN markup_th IS DISTINCT FROM %s THEN 'pending'
                                        ELSE review_th END
-               WHERE id=%s""",
+               WHERE id=%s AND (review_th <> 'approved' OR %s)""",
             (
                 markup_th,
                 strip_markup(markup_th),
@@ -270,6 +270,7 @@ def save_unit(
                 key,
                 markup_th,
                 unit.id,
+                unit.approved,  # approved or edited in R4 during the run: keep the reviewer's
             ),
         )
     else:
@@ -343,12 +344,17 @@ def translate_document(
     guard: GpuGuard | None = None,
     database_url: str | None = None,
     log: Callable[[str], None] = print,
+    progress: Callable[[dict], None] | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> dict:
     """Translate pages ``first``..``last``. The engine guards the GPU itself (see
     ``GuardedEngine``); ``guard`` is only read for the log and the summary.
     Engines with ``workers`` > 1 (Claude) run that many requests at once, given the
     ``database_url`` for their connections. Thai you approved in R4 is kept unless
-    ``force``. Every finished piece is committed at once, so a stop loses nothing."""
+    ``force``. Every finished piece is committed at once, so a stop loses nothing.
+
+    ``progress(info)`` hears about every finished piece; when ``stop()`` turns true the
+    run ends after the pieces in flight (the summary then has ``stopped``)."""
     glossary = Glossary(load_glossary(conn, doc_id))
     units, copies, tables = plan_units(conn, doc_id, first, last)
     conn.execute(
@@ -377,25 +383,60 @@ def translate_document(
             has_th=unit.has_th,
         )  # fmt: skip
 
-    for i, (unit, (markup_th, key, outcome)) in enumerate(pool.map(work, todo), 1):
-        stats[outcome.source] += 1
-        if markup_th is not None:
-            save_unit(conn, unit, markup_th, key, outcome)
-            flagged += bool(outcome.flags)
-        conn.commit()
-        if i % 10 == 0 or i == len(todo):
+    stopped = False
+    results = pool.map(work, todo)
+    try:
+        for i, (unit, (markup_th, key, outcome)) in enumerate(results, 1):
+            stats[outcome.source] += 1
+            if markup_th is not None:
+                save_unit(conn, unit, markup_th, key, outcome)
+                flagged += bool(outcome.flags)
+            conn.commit()
             elapsed = time.monotonic() - started
             eta = elapsed / i * (len(todo) - i)
-            temp = guard.temperature() if guard is not None else None
-            log(
-                f"  {i}/{len(todo)} · {stats['mt']} translated, {stats['tm'] + stats['human']} "
-                f"from memory, {stats['unchanged']} unchanged · {flagged} flagged · "
-                f"ETA {eta / 60:.0f} min" + (f" · GPU hot spot {temp}°C" if temp else "")
-            )
+            if progress is not None:
+                progress({
+                    "phase": "chunks", "done": i, "total": len(todo), "translated": stats["mt"],
+                    "memory": stats["tm"] + stats["human"], "unchanged": stats["unchanged"],
+                    "flagged": flagged, "eta_s": round(eta),
+                })  # fmt: skip
+            if i % 10 == 0 or i == len(todo):
+                temp = guard.temperature() if guard is not None else None
+                log(
+                    f"  {i}/{len(todo)} · {stats['mt']} translated, "
+                    f"{stats['tm'] + stats['human']} from memory, {stats['unchanged']} "
+                    f"unchanged · {flagged} flagged · ETA {eta / 60:.0f} min"
+                    + (f" · GPU hot spot {temp}°C" if temp else "")
+                )
+            if stop is not None and stop():
+                stopped = True
+                break
+    finally:
+        results.close()  # a stop: let requests in flight finish, start no more
+    if stopped:
+        apply_to_blocks(conn, doc_id, first, last)  # the Thai pages show what is done
+        conn.commit()
+        log("Stopped: finished pieces are saved; start again to continue.")
+        return {
+            "units": len(units), **dict(stats), "flagged": flagged, "stopped": True,
+            "seconds": round(time.monotonic() - started),
+        }  # fmt: skip
     titles = heading_thai(conn, doc_id)  # contents and bookmarks reuse heading Thai
+    if progress is not None:
+        progress({"phase": "tables and contents", "done": 0, "total": 0})
     stats["table_cells"] = translate_tables(
-        conn, tables, engine, glossary, force=force, titles=titles, log=log, pool=pool
-    )
+        conn, tables, engine, glossary, force=force, titles=titles, log=log, pool=pool,
+        stop=stop,
+    )  # fmt: skip
+    if stop is not None and stop():
+        apply_to_blocks(conn, doc_id, first, last)
+        conn.commit()
+        return {
+            "units": len(units), **dict(stats), "flagged": flagged, "stopped": True,
+            "seconds": round(time.monotonic() - started),
+        }  # fmt: skip
+    if progress is not None:
+        progress({"phase": "bookmarks", "done": 0, "total": 0})
 
     def title(markup: str):
         markup_th, key, outcome = translate_text(conn, engine, glossary, markup, force=force)
@@ -430,6 +471,7 @@ def translate_tables(
     titles: dict[str, str] | None = None,
     log: Callable[[str], None] = lambda _m: None,
     pool: Pool | None = None,
+    stop: Callable[[], bool] | None = None,
 ) -> int:
     """Translate the text cells of tables and the entries of contents pages (code-like
     cells and page numbers stay as they are). A contents title reuses its heading's
@@ -491,13 +533,21 @@ def translate_tables(
         return strip_markup(markup_th or "")
 
     count = 0
-    for (block_id, k, _text), thai in pool.map(work, jobs):
-        done[block_id][k] = thai
-        conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done[block_id]), block_id))
-        conn.commit()
-        count += 1
-        if count % 25 == 0:
-            log(f"  tables and contents: {count}/{len(jobs)} cells")
+    results = pool.map(work, jobs)
+    try:
+        for (block_id, k, _text), thai in results:
+            done[block_id][k] = thai
+            conn.execute(
+                "UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done[block_id]), block_id)
+            )
+            conn.commit()
+            count += 1
+            if count % 25 == 0:
+                log(f"  tables and contents: {count}/{len(jobs)} cells")
+            if stop is not None and stop():
+                break
+    finally:
+        results.close()
     for c in conn.execute(
         "SELECT id, block_ids FROM chunks WHERE kind='table' AND block_ids && %s::bigint[]",
         (block_ids,),

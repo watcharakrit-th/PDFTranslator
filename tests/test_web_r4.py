@@ -1,5 +1,7 @@
+import threading
+
 import pytest
-from conftest import chunk_by_text
+from conftest import FakeEngine, chunk_by_text
 from fastapi.testclient import TestClient
 
 from pdftr.translate.runner import translate_document
@@ -101,3 +103,109 @@ def test_other_text_cell_edit(client, conn, translated):
     assert r.status_code == 204
     row = conn.execute("SELECT cells_th FROM blocks WHERE id=%s", (toc,)).fetchone()
     assert row["cells_th"]["t:working with files"] == "การทำงานกับไฟล์"
+
+
+# ------------------------------------------------------------------ Translate all
+class GateEngine(FakeEngine):
+    """FakeEngine whose first request waits until the test opens the gate."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.gate = threading.Event()
+
+    def translate(self, text, rules, *, retry=False, stop=None):
+        if not self.entered.is_set():
+            self.entered.set()
+            assert self.gate.wait(timeout=20)
+        return super().translate(text, rules, retry=retry, stop=stop)
+
+
+def _ready_to_translate(conn, doc_id):
+    conn.execute("UPDATE documents SET stage='translate' WHERE id=%s", (doc_id,))
+    conn.commit()
+
+
+def _missing(conn, doc_id):
+    sql = "SELECT count(*) AS n FROM chunks WHERE doc_id=%s AND text_th IS NULL"
+    return conn.execute(sql, (doc_id,)).fetchone()["n"]
+
+
+def test_translate_all_needs_the_glossary_first(client, sample_doc):
+    r = client.post("/doc/1/translate/start", headers=HX)
+    assert r.status_code == 409 and "R1–R3" in r.text
+
+
+def test_translate_all_runs_the_whole_book(client, conn, sample_doc):
+    _ready_to_translate(conn, sample_doc)
+    page = client.get("/doc/1/r4?page=2").text
+    assert 'id="translate-all"' in page and "chunks have no Thai yet" in page
+    r = client.post("/doc/1/translate/start", headers=HX)
+    assert r.status_code == 204 and r.headers["HX-Refresh"] == "true"
+    job = client.app.state.job
+    job.join(timeout=30)
+    assert job.state == "finished", job.error
+    stage = conn.execute("SELECT stage FROM documents WHERE id=%s", (sample_doc,)).fetchone()
+    assert stage["stage"] == "r4_chunks_th" and _missing(conn, sample_doc) == 0
+    r = client.get("/doc/1/translate/status", headers=HX)  # the page's next poll
+    assert r.status_code == 204 and r.headers["HX-Refresh"] == "true"
+    page = client.get("/doc/1/r4?page=2").text
+    assert 'id="translate-all"' not in page and "ฐานข้อมูล" in page
+
+
+def test_translate_all_while_reviewing(test_db_url, conn, sample_doc):
+    """The page keeps working during a run: progress, one run at a time, no per-chunk
+    re-translation, and Thai you write meanwhile is not overwritten."""
+    engine = GateEngine()
+    client = TestClient(create_app(test_db_url, allowed_hosts=["testserver"], engine=engine))
+    _ready_to_translate(conn, sample_doc)
+    db = chunk_by_text(conn, sample_doc, "A database")
+    try:
+        assert client.post("/doc/1/translate/start", headers=HX).status_code == 204
+        assert engine.entered.wait(timeout=20)  # the first request is in progress
+        r = client.get("/doc/1/translate/status", headers=HX)
+        assert r.status_code == 200 and 'hx-trigger="every 3s"' in r.text and "Stop" in r.text
+        assert 'hx-trigger="every 3s"' in client.get("/doc/1/r4?page=2").text
+        r = client.post("/doc/1/translate/start", headers=HX)
+        assert r.status_code == 409 and "running" in r.text
+        r = client.post(f"/doc/1/chunks/{db['id']}/th/retranslate", headers=HX)
+        assert r.status_code == 409 and "running" in r.text
+        r = client.post(
+            f"/doc/1/chunks/{db['id']}/th/edit", data={"text": "ฐานข้อมูลของฉัน"}, headers=HX
+        )
+        assert r.status_code == 204
+    finally:
+        engine.gate.set()
+    job = client.app.state.job
+    job.join(timeout=30)
+    assert job.state == "finished", job.error
+    row = chunk_by_text(conn, sample_doc, "A database")
+    assert row["text_th"] == "ฐานข้อมูลของฉัน" and row["tr_source"] == "human"
+    assert _missing(conn, sample_doc) == 0
+
+
+def test_translate_all_stop_and_continue(test_db_url, conn, sample_doc):
+    engine = GateEngine()
+    client = TestClient(create_app(test_db_url, allowed_hosts=["testserver"], engine=engine))
+    _ready_to_translate(conn, sample_doc)
+    try:
+        assert client.post("/doc/1/translate/start", headers=HX).status_code == 204
+        assert engine.entered.wait(timeout=20)
+        r = client.post("/doc/1/translate/stop", headers=HX)
+        assert r.status_code == 200 and "Stopping" in r.text
+    finally:
+        engine.gate.set()
+    job = client.app.state.job
+    job.join(timeout=30)
+    assert job.state == "stopped" and job.summary["stopped"]
+    missing = _missing(conn, sample_doc)
+    total = conn.execute("SELECT count(*) AS n FROM chunks WHERE doc_id=%s", (sample_doc,))
+    assert 0 < missing < total.fetchone()["n"]  # the piece in progress was finished and kept
+    stage = conn.execute("SELECT stage FROM documents WHERE id=%s", (sample_doc,)).fetchone()
+    assert stage["stage"] == "translate"  # not finished yet
+    page = client.get("/doc/1/r4?page=2").text
+    assert "Stopped." in page and 'id="translate-all"' in page
+    assert client.post("/doc/1/translate/start", headers=HX).status_code == 204  # continue
+    job = client.app.state.job
+    job.join(timeout=30)
+    assert job.state == "finished" and _missing(conn, sample_doc) == 0
