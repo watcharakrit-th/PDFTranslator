@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Search{% if q %} · {{ q }}{% endif %}{% endblock %}
+{% block content %}
+<section class="search">
+  <form method="get" class="search-form" role="search">
+    <input name="q" value="{{ q }}" placeholder="Search in Thai or English, e.g. คำสั่งแสดงไฟล์ที่ซ่อน" aria-label="Search" autofocus>
+    <select name="doc" aria-label="Book">
+      <option value="">All books</option>
+      {% for d in docs %}<option value="{{ d.id }}" {% if doc_filter == d.id %}selected{% endif %}>{{ d.title or d.file_name }}</option>{% endfor %}
+    </select>
+    <button class="primary">Search</button>
+  </form>
+  {% if error %}<p class="banner">{{ error }}</p>{% endif %}
+  {% if q and not hits and not error %}<p class="empty">Nothing found. Only books embedded in R5 (<code>pdftr embed</code>) can be searched.</p>{% endif %}
+  {% for h in hits %}
+  <article class="hit">
+    <header>
+      <span class="score" title="Similarity (1 = identical); matched on the {{ 'English' if h.lang == 'en' else 'Thai' }} text">{{ "%.2f"|format(h.score) }}</span>
+      <a href="/doc/{{ h.doc_id }}/r4?page={{ h.page_start }}">{{ h.title }} · p. {{ h.label }}</a>
+      <span class="muted">{{ h.section_path|join(" › ") }}</span>
+    </header>
+    <p lang="en">{{ h.text_en }}</p>
+    {% if h.text_th and h.kind != "code" %}<p lang="th" class="th">{{ h.text_th }}</p>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endblock %}

@@ -169,3 +169,9 @@ CREATE TABLE IF NOT EXISTS outline_entries (
     tr_flags  text[] NOT NULL DEFAULT '{}',
     UNIQUE (doc_id, seq)
 );
+
+-- v5 (M5): embeddings. A hash of the exact embedded text (and model) per language, so a
+-- re-run embeds only what changed; R5 approval time.
+ALTER TABLE chunks    ADD COLUMN IF NOT EXISTS embed_key_en text;
+ALTER TABLE chunks    ADD COLUMN IF NOT EXISTS embed_key_th text;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS embed_approved_at timestamptz;

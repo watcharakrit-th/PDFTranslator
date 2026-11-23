@@ -50,7 +50,7 @@ def test_edit_approve_retranslate_and_complete(client, conn, translated):
     assert r.status_code == 409  # still pending chunks
     client.post("/doc/1/r4/approve-all", headers=HX)
     r = client.post("/doc/1/r4/complete", headers=HX)
-    assert r.headers["HX-Redirect"] == "/"
+    assert r.headers["HX-Redirect"] == "/doc/1/r5"  # R5 is next
 
 
 def test_glossary_flag_names_the_term(client, conn, translated):

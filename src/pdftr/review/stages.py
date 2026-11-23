@@ -23,7 +23,7 @@ STEPS = [
     ("r2", "r2_terms_en", "R2 English terms", True),
     ("r3", "r3_terms_th", "R3 Thai terms", True),
     ("r4", "r4_chunks_th", "R4 Thai chunks", True),
-    ("r5", "r5_embed", "R5 Embedding", False),
+    ("r5", "r5_embed", "R5 Embedding", True),
 ]
 STEP_STAGE = {s: stage for s, stage, _, _ in STEPS}
 
@@ -77,6 +77,13 @@ def blockers(conn: psycopg.Connection, doc_id: int, step: str) -> str | None:
         if row["missing"]:
             return f"{row['missing']} chunks are not translated yet"
         return f"{row['pending']} Thai chunks still pending" if row["pending"] else None
+    if step == "r5":
+        n = conn.execute(
+            """SELECT count(*) AS n FROM chunks WHERE doc_id=%s AND embed AND kind <> 'table'
+               AND review_en = 'approved'""",
+            (doc_id,),
+        ).fetchone()["n"]
+        return None if n else "there is nothing to embed"
     raise ReviewError(f"Unknown step {step}")
 
 
@@ -95,5 +102,7 @@ def complete(conn: psycopg.Connection, doc_id: int, step: str) -> str:
         raise ReviewError(f"Cannot complete {step.upper()} yet: {reason}.")
     new_stage = STAGES[STAGES.index(stage) + 1]
     conn.execute("UPDATE documents SET stage=%s, updated_at=now() WHERE id=%s", (new_stage, doc_id))
+    if step == "r5":  # the embedding may start now (pdftr embed)
+        conn.execute("UPDATE documents SET embed_approved_at=now() WHERE id=%s", (doc_id,))
     log(conn, doc_id, step, "complete", f"doc:{doc_id}", stage=new_stage)
     return new_stage

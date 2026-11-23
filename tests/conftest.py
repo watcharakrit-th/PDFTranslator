@@ -119,6 +119,35 @@ def fake_engine():
     return FakeEngine()
 
 
+class FakeEmbedder:
+    """Deterministic stand-in for BGE-M3: character trigrams hashed into 1024 dimensions,
+    so similar texts get similar unit vectors."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.texts = 0
+
+    def encode(self, texts):
+        import zlib
+
+        import numpy as np
+
+        self.texts += len(texts)
+        out = np.zeros((len(texts), 1024), dtype=np.float32)
+        for i, text in enumerate(texts):
+            t = " ".join(text.lower().split())
+            for j in range(max(1, len(t) - 2)):
+                out[i, zlib.crc32(t[j : j + 3].encode()) % 1024] += 1.0
+            out[i] /= np.linalg.norm(out[i]) or 1.0
+        return out
+
+
+@pytest.fixture
+def fake_embedder():
+    return FakeEmbedder()
+
+
 @pytest.fixture
 def sample_doc(conn, sample_pdf):
     """A two-page document: a paragraph that runs across the page break, a
