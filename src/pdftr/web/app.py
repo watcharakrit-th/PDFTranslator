@@ -35,6 +35,8 @@ STEP_URL = {
     "r3_terms_th": "r3",
     "translate": "r4",
     "r4_chunks_th": "r4",
+    "r5_embed": "r5",
+    "done": "r5",
 }
 
 templates = Jinja2Templates(directory=HERE / "templates")
@@ -57,19 +59,25 @@ templates.env.globals["pct"] = lambda v, total: round(100 * float(v) / float(tot
 
 
 def create_app(
-    database_url: str | None = None, allowed_hosts: list[str] | None = None, engine=None
+    database_url: str | None = None,
+    allowed_hosts: list[str] | None = None,
+    engine=None,
+    embedder=None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
         if app.state.ollama is not None:  # an Ollama we started for "Re-translate"
             app.state.ollama.stop()
+        if getattr(app.state.embedder, "unload", None):  # BGE-M3 loaded for search
+            app.state.embedder.unload()
 
     app = FastAPI(
         title="pdftr review", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
     )
     app.state.database_url = database_url
     app.state.engine = engine  # tests pass a fake; otherwise started on first use
+    app.state.embedder = embedder  # likewise, for search
     app.state.ollama = None
     app.add_middleware(
         TrustedHostMiddleware, allowed_hosts=allowed_hosts or ["127.0.0.1", "localhost"]
@@ -96,6 +104,8 @@ def create_app(
 
     _routes(app)
     _r4_routes(app)
+    _r5_routes(app)
+    _search_routes(app)
     return app
 
 
@@ -118,7 +128,11 @@ def _engine(app: FastAPI):
 
 def _gpu_cool_enough() -> None:
     s = get_settings()
-    temp = GpuGuard.from_settings(s, log=lambda _msg: None).temperature()
+    guard = GpuGuard.from_settings(s, log=lambda _msg: None)
+    problem = guard.power_problem(s.gpu_max_power_w) if s.gpu_device == "cuda" else None
+    if problem:
+        raise ReviewError(problem)
+    temp = guard.temperature()
     if temp is not None and temp >= s.gpu_pause_at_c:
         raise ReviewError(
             f"The GPU hot spot is at {temp}°C. Wait until it is below "
@@ -438,7 +452,7 @@ def _routes(app: FastAPI) -> None:
 
     @app.post("/doc/{doc_id}/{step}/complete")
     def complete_step(request: Request, doc_id: int, step: str):
-        if step not in ("r1", "r2", "r3", "r4"):
+        if step not in ("r1", "r2", "r3", "r4", "r5"):
             raise HTTPException(404)
         with db(request) as conn:
             new_stage = stages.complete(conn, doc_id, step)
@@ -678,3 +692,76 @@ def _r4_routes(app: FastAPI) -> None:
                 "Please check them."
             )
         return _toast_and_refresh(f"Suggested Thai for {n} terms: please check them")
+
+
+# ----------------------------------------------------------------------------- R5
+def _r5_routes(app: FastAPI) -> None:
+    @app.get("/doc/{doc_id}/r5")
+    def r5(request: Request, doc_id: int, page: int | None = None):
+        from pdftr.embed.runner import plan, summary
+
+        with db(request) as conn:
+            doc = _doc(conn, doc_id)
+            state = next(s["state"] for s in stages.step_states(doc["stage"]) if s["step"] == "r5")
+            if state == "locked":
+                return RedirectResponse(f"/doc/{doc_id}", status_code=303)
+            model = get_settings().embed_model.split("/")[-1].lower()
+            plans = plan(conn, doc_id, model)
+            blocker = None if doc["embed_approved_at"] else stages.blockers(conn, doc_id, "r5")
+        chapters: dict[str, dict] = {}
+        for p in plans:
+            ch = chapters.setdefault(
+                p.chapter, {"title": p.chapter or "(before the first chapter)", "plans": []}
+            )
+            ch["plans"].append(p)
+        rows = [{"title": ch["title"], **summary(ch["plans"])} for ch in chapters.values()]
+        pages = sorted({p.page for p in plans})
+        if page not in pages:
+            page = pages[0] if pages else None
+        i = pages.index(page) if page in pages else 0
+        return templates.TemplateResponse(
+            request,
+            "r5.html",
+            _base(
+                request,
+                doc,
+                step="r5",
+                counts=summary(plans),
+                chapters=rows,
+                page=page,
+                on_page=[p for p in plans if p.page == page],
+                prev_page=pages[i - 1] if i > 0 else None,
+                next_page=pages[i + 1] if i + 1 < len(pages) else None,
+                blocker=blocker,
+            ),
+        )
+
+
+# ------------------------------------------------------------------------- search
+def _search_routes(app: FastAPI) -> None:
+    @app.get("/search")
+    def search_page(request: Request, q: str = "", doc: int | None = None):
+        from pdftr.embed.search import search as run_search
+
+        hits, error = [], None
+        with db(request) as conn:
+            docs = conn.execute("SELECT id, title, file_name FROM documents ORDER BY id").fetchall()
+            if q.strip():
+                try:
+                    hits = run_search(conn, _embedder(request.app), q, doc_id=doc, top=12)
+                except Exception as exc:  # noqa: BLE001 - shown on the page instead of a 500
+                    error = f"Search failed: {exc}"
+        return templates.TemplateResponse(
+            request,
+            "search.html",
+            _base(request, None, q=q, hits=hits, docs=docs, doc_filter=doc, error=error),
+        )
+
+
+def _embedder(app: FastAPI):
+    """BGE-M3 for search queries, loaded on first use (a query is a moment of GPU work)."""
+    if getattr(app.state, "embedder", None) is None:
+        from pdftr.embed.model import make_embedder
+
+        app.state.embedder = make_embedder(get_settings(), log=lambda _m: None)
+    return app.state.embedder

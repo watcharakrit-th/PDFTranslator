@@ -116,6 +116,30 @@ under load. The core temperature is what `nvidia-smi` and most tools report.
 - **Navigation:** bookmarks follow the book's outline with Thai titles. Page labels keep the book's numbering (i, ii … 1, 2 …), so "go to page 54" works. In the alternate layout, Thai pages are labelled "54 TH".
 - **Copy and search:** Thai text copies out correctly and Ctrl+F finds Thai words, because pdftr repairs the text layer that the drawing engine writes. The page looks exactly the same.
 
+## Embedding and search (M5)
+
+- **R5 · Embedding:** after R4, the review page's R5 step shows, chunk by chunk, exactly what goes into the search index, in English and in Thai. Each entry is the context (section path, list intro, parent item, question) followed by the chunk. Approve it there, then run:
+
+  ```powershell
+  .venv\Scripts\pdftr embed 1
+  ```
+
+- **What is embedded:**
+  - every chunk approved in R1, except tables, Key Terms lists and chunks you kept out;
+  - the Thai of every chunk approved in R4;
+  - code once, in English only.
+- **The model:** BGE-M3 runs on the GPU in small batches under the GPU guard. It downloads once, about 2.2 GB, into `.cache\huggingface`.
+- **Re-runs:** a re-run embeds only new or changed text. After later edits, run `pdftr embed` again.
+- **Search:** in Thai or English, matching either language. Each result shows its score, book, page and section, with the English and the Thai text.
+
+  ```powershell
+  .venv\Scripts\pdftr search "คำสั่งแสดงไฟล์ที่ซ่อน"
+  .venv\Scripts\pdftr search "how do I list hidden files" --doc 1 --top 5
+  ```
+
+  The review page has a **Search** link (top right) that does the same in the browser. Results link to their page in R4.
+- **Power check:** with `PDFTR_GPU_MAX_POWER_W=150` in `.env`, `translate`, `embed` and `ingest` refuse to start while the card's power limit is higher. The limit goes back to 235 W after every reboot.
+
 ## Commands
 
 | Command | Does |
@@ -123,6 +147,8 @@ under load. The core temperature is what `nvidia-smi` and most tools report.
 | `pdftr translate <doc> [--pages 15-24] [--force]` | Translate (after R3; any time with `--pages`) |
 | `pdftr ollama status` / `pdftr ollama pull` | Check Ollama / download the translation model |
 | `pdftr render <doc> [--layout alternate] [--pages 15-34] [--out file.pdf]` | Build the bilingual PDF |
+| `pdftr embed <doc> [--force]` | Embed the reviewed chunks after R5 (only changes on a re-run) |
+| `pdftr search "query" [--doc 1] [--top 8] [--lang both\|en\|th]` | Search in Thai or English |
 | `pdftr render-page <doc> <page>` | One Thai page as PNG + PDF |
 | `pdftr review [--port 8765] [--no-open]` | Open the review web page (R1–R3) |
 | `pdftr glossary export\|import <csv>` | Glossary to / from CSV (UTF-8, opens in Excel) |

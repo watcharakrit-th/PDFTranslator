@@ -92,7 +92,7 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 - **Tables:** `documents`, `pages`, `blocks`, `chunks`, `terms`, `doc_terms`, `translation_memory`, `jobs`.
 - **Embeddings:** BGE-M3 (1024 dimensions) on the GPU. Both the English and the Thai text of each chunk are embedded, with an HNSW cosine index on each.
 - **Re-processing:** the same file (same hash) reuses the existing document and all your reviews. `--force` starts over, after asking you to confirm.
-- **Search:** `pdftr search "..."` accepts Thai or English. It shows the book, page, section, and the English and Thai text.
+- **Search:** `pdftr search "..."` accepts Thai or English. It shows the book, page, section, and the English and Thai text. The review page has the same search.
 
 ## 8. How you run it
 
@@ -134,7 +134,7 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 | M2 ✅ 2026-11-22 | Review web page: R1, R2, R3 | Review chunks and terms |
 | M3 ✅ 2026-11-22 | Typhoon engine, translation memory, R4 with Thai page preview, hot-spot GPU guard | Get a fully translated, reviewed book |
 | M4 ✅ 2026-11-23 | Full-book renderer, side-by-side + alternate layouts, bookmarks, text-layer fix | Read the bilingual PDF |
-| M5 | BGE-M3 embedding, R5, `search` | Search your books in Thai or English |
+| M5 ✅ 2026-11-23 | BGE-M3 embedding, R5, `search` | Search your books in Thai or English |
 | M6 | Claude engine, Linux deployment guide | Switch engines, move to the server |
 
 ## 11. Prototype result
@@ -244,9 +244,32 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 | File | 5.4 MB; fonts and images are stored once |
 | Contents translation | 350 titles in 93 s; GPU hot spot peak 74 °C at 150 W, no waits or stops |
 
-## 16. Open items
+## 16. M5 results
 
-- **Power limit:** the 150 W limit resets at every reboot. The README has a one-line scheduled task that re-applies it at sign-in. The fans stay off below about 60 °C (core) and reached 51–56% in the tests. A custom fan curve, or fresh thermal paste, would cool the GPU further, because a 25 °C gap between core and hot spot is large.
+- **R5 · Embedding:** the review page shows, chunk by chunk, exactly what goes into the search index in English and in Thai, and why anything is left out. **Approve embedding** unlocks `pdftr embed`; nothing is embedded before that.
+- **What is embedded:**
+  - chunks approved in R1, except tables, Key Terms lists and chunks kept out;
+  - their Thai once approved in R4;
+  - code once, in English.
+- **Embedded text:** context + chunk. The Thai context is built like the English one. Section titles come from the translated headings and bookmarks, and the list intro, parent item and question come from the Thai of those chunks.
+- **`pdftr embed`:**
+  - BGE-M3 dense vectors (1024 dimensions, fp16) on the GPU, in batches of 16 under the GPU guard.
+  - A hash of each embedded text lets a re-run embed only new or changed text, and clear the vectors of chunks no longer included.
+- **Search:** `pdftr search` and the review page's Search compare the query with both the English and the Thai vectors (HNSW, cosine). Each result shows the book, printed page and section, with the English and Thai text.
+- **Power check:** with `PDFTR_GPU_MAX_POWER_W=150`, `translate`, `embed` and `ingest` refuse to start while the card's power limit is higher, and say what to run.
+- **Model:** BGE-M3 downloads once (2.2 GB, into `.cache\huggingface`). It loads in 8 s from the cache.
+
+| Measure (test copy, CompTIA pages 1–100) | Result |
+|---|---|
+| Embedding | 906 English + 180 Thai texts in 29 s; GPU hot spot peak 72 °C at 150 W |
+| Re-run with nothing changed | 0.1 s (the model isn't even loaded) |
+| Same meaning, English vs Thai | similarity 0.75–0.92; unrelated pairs 0.55 at most |
+| Example: "ใครเป็นคนสร้างลินุกซ์" | The History of Linux (p. 13), then the review questions on Linus Torvalds and UNIX's creators |
+| Example: "how do I tell which kernel version is stable" | "production kernels … declared stable" (p. 5) |
+
+## 17. Open items
+
+- **Power limit:** the 150 W limit resets at every reboot, and GPU commands now refuse to start until it is re-applied (`PDFTR_GPU_MAX_POWER_W`). The README has a one-line scheduled task that re-applies it at sign-in. The fans stay off below about 60 °C (core) and reached 51–56% in the tests. A custom fan curve, or fresh thermal paste, would cool the GPU further, because a 25 °C gap between core and hot spot is large.
 - **Links:** the book's internal links (for example, from the contents to a chapter) are not carried over into the bilingual PDF. Bookmarks and page labels handle navigation.
 
 - The third sample (*The Comprehensive DevOps Interview Guide*) is **damaged**. It was opened and saved as text, which replaced 5.3 million bytes with "�". Please copy it again from the original source using File Explorer, and don't open it in VS Code.

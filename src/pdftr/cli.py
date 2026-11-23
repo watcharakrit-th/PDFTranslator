@@ -87,6 +87,21 @@ def gpu() -> None:
     console.print(guard.describe())
 
 
+def _gpu_ready(settings, guard) -> None:
+    """Stop before long GPU work when the temperature can't be read or the card's power
+    limit is above PDFTR_GPU_MAX_POWER_W (it resets to the default after a reboot)."""
+    if settings.gpu_device != "cuda":
+        return
+    if not guard.available:
+        console.print("[red]Cannot read the GPU temperature[/], so GPU work will not run.")
+        raise typer.Exit(1)
+    problem = guard.power_problem(settings.gpu_max_power_w)
+    if problem:
+        console.print(f"[red]Not starting:[/] {problem}")
+        raise typer.Exit(1)
+    console.print(guard.describe())
+
+
 # --------------------------------------------------------------------------- ingest
 @app.command()
 def ingest(
@@ -96,12 +111,16 @@ def ingest(
     no_db: bool = typer.Option(False, "--no-db", help="Only write the JSON dump"),
 ) -> None:
     """Extract, cut and collect terms (ready for review step R1)."""
+    from pdftr.gpu import GpuGuard
     from pdftr.ingest.pipeline import AlreadyIngested
     from pdftr.ingest.pipeline import ingest as run
+    from pdftr.settings import get_settings
 
     first, last = parse_pages(pages)
     if force and not typer.confirm("--force deletes this document's chunks and reviews. Continue?"):
         raise typer.Abort()
+    settings = get_settings()
+    _gpu_ready(settings, GpuGuard.from_settings(settings, log=console.print))
     try:
         summary = run(pdf, first, last, force=force, use_db=not no_db, log=console.print)
     except AlreadyIngested as exc:
@@ -445,7 +464,7 @@ def translate(
         if not guard.available:
             console.print("[red]Cannot read the GPU temperature[/], so translation will not run.")
             raise typer.Exit(1)
-        console.print(guard.describe())
+        _gpu_ready(s, guard)
         try:
             with OllamaServer(s, log=console.print) as client:
                 if not client.has_model(s.translate_model):
@@ -552,3 +571,91 @@ def render(
         f"on {result.sheets} sheets, {result.size_mb} MB, in {result.seconds:.0f} s"
         + (f"; {result.overflow} text areas do not fit (see R4)" if result.overflow else "")
     )
+
+
+# ---------------------------------------------------------------------------- embed
+@app.command()
+def embed(
+    doc_id: int,
+    force: bool = typer.Option(False, help="Embed everything again, even unchanged text"),
+) -> None:
+    """Embed the reviewed chunks (English and Thai) after R5. Re-runs embed only changes."""
+    from pdftr.db import connect, init_schema
+    from pdftr.embed.model import make_embedder
+    from pdftr.embed.runner import embed_document
+    from pdftr.gpu import GpuGuard
+    from pdftr.settings import configure_environment, get_settings
+
+    s = get_settings()
+    configure_environment(s)
+    with connect() as conn:
+        init_schema(conn)
+        doc = conn.execute(
+            "SELECT stage, embed_approved_at FROM documents WHERE id=%s", (doc_id,)
+        ).fetchone()
+        if doc is None:
+            console.print(f"[red]No document {doc_id}[/]")
+            raise typer.Exit(1)
+        if doc["embed_approved_at"] is None:
+            console.print(
+                "[yellow]Approve the embedding in R5 first[/] (review page, step R5). "
+                "R5 opens when R4 is complete."
+            )
+            raise typer.Exit(1)
+        guard = GpuGuard.from_settings(s, log=console.print)
+        _gpu_ready(s, guard)
+        embedder = make_embedder(s, guard if s.gpu_device == "cuda" else None, log=console.print)
+        try:
+            summary = embed_document(conn, doc_id, embedder, force=force, log=console.print)
+        except KeyboardInterrupt:
+            console.print("[yellow]Stopped.[/] What is embedded is saved; run it again to finish.")
+            raise typer.Exit(130) from None
+        finally:
+            embedder.unload()
+    summary["gpu_peak_hotspot_c"] = guard.peak_c if s.gpu_device == "cuda" else None
+    table = Table("item", "value", show_header=False)
+    for key, value in summary.items():
+        table.add_row(key, str(value))
+    console.print(table)
+
+
+@app.command()
+def search(
+    query: str,
+    doc: int = typer.Option(None, "--doc", "-d", help="Only this document"),
+    top: int = typer.Option(8, "--top", "-n", help="How many results"),
+    lang: str = typer.Option("both", "--lang", help="Match on: both, en or th"),
+) -> None:
+    """Search the embedded chunks in Thai or English."""
+    from pdftr.db import connect
+    from pdftr.embed.model import make_embedder
+    from pdftr.embed.search import search as run_search
+    from pdftr.settings import configure_environment, get_settings
+
+    langs = {"both": ("en", "th"), "en": ("en",), "th": ("th",)}.get(lang)
+    if langs is None:
+        console.print("[red]--lang must be both, en or th[/]")
+        raise typer.Exit(2)
+    s = get_settings()
+    configure_environment(s)
+    embedder = make_embedder(s, log=lambda _m: None)  # one short query: no guard needed
+    with connect() as conn:
+        hits = run_search(conn, embedder, query, doc_id=doc, top=top, langs=langs)
+    embedder.unload()
+    if not hits:
+        console.print("Nothing found. Is anything embedded yet? (pdftr embed <doc>)")
+        return
+    for i, h in enumerate(hits, 1):
+        where = f"p. {h.label}" + (f"–{h.page_end}" if h.page_end != h.page_start else "")
+        console.print(
+            f"[bold]{i}. {h.score:.2f}[/] · {h.title} · {where} · "
+            f"[dim]{' > '.join(h.section_path)}[/]"
+        )
+        console.print(f"   {_clip(h.text_en)}", markup=False, highlight=False)
+        if h.text_th:
+            console.print(f"   {_clip(h.text_th)}", markup=False, highlight=False)
+
+
+def _clip(text: str, limit: int = 220) -> str:
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"

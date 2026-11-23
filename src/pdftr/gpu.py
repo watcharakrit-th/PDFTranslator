@@ -232,6 +232,24 @@ class GpuGuard:
             fan_pct=fan,
         )
 
+    def power_limit_w(self) -> float | None:
+        if not self.available:
+            return None
+        with self._lock:
+            return self._nv.nvmlDeviceGetEnforcedPowerLimit(self._handle) / 1000.0
+
+    def power_problem(self, max_w: int) -> str | None:
+        """Why GPU work should not start: the card's power limit is above ``max_w``
+        (it resets to the default after a reboot). None when fine or not checked."""
+        limit = self.power_limit_w() if max_w else None
+        if limit is None or limit <= max_w + 0.5:
+            return None
+        return (
+            f"The GPU power limit is {limit:.0f} W, above the {max_w} W set in .env "
+            f"(PDFTR_GPU_MAX_POWER_W). It resets after a reboot. In an Administrator "
+            f"PowerShell run:  nvidia-smi -pl {max_w}"
+        )
+
     def cool_down(self, reason: str) -> None:
         """Wait until the hot spot is back at ``resume_at_c``."""
         temp = self.temperature()

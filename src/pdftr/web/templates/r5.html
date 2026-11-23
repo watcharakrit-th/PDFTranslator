@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}R5 · {{ doc.title or doc.file_name }}{% endblock %}
+{% block content %}
+<section class="r5">
+  <header class="r5-head">
+    <h1>R5 · Embedding</h1>
+    {% if doc.embed_approved_at %}
+    <p class="ok-banner">✓ Embedding approved on {{ doc.embed_approved_at.astimezone().strftime("%Y-%m-%d %H:%M") }}.
+      {% if counts.en_todo + counts.th_todo %}Run <code>pdftr embed {{ doc.id }}</code> to embed the
+      {{ counts.en_todo + counts.th_todo }} waiting texts (GPU, a few minutes; it keeps the GPU cool).
+      {% else %}Everything approved is embedded and can be searched.{% endif %}
+      After later edits, run <code>pdftr embed {{ doc.id }}</code> again: only changed chunks are embedded again.</p>
+    {% else %}
+    <p>Embedding puts each chunk into the search index, in English and in Thai: its context
+      (section path, list intro, parent item, question) followed by the chunk itself.
+      Nothing is embedded until you approve it here.</p>
+    {% if blocker %}<p class="banner">Cannot approve yet: {{ blocker }}.</p>{% endif %}
+    <button class="primary" hx-post="/doc/{{ doc.id }}/r5/complete" {% if blocker %}disabled{% endif %}
+            hx-confirm="Approve embedding for this book? Then run: pdftr embed {{ doc.id }}">✓ Approve embedding</button>
+    {% endif %}
+    <p class="r5-counts">
+      English: <strong>{{ counts.en_done }}</strong> of {{ counts.en_total }} embedded ·
+      Thai: <strong>{{ counts.th_done }}</strong> of {{ counts.th_total }} embedded ·
+      {{ counts.en_todo + counts.th_todo }} to embed ·
+      <span class="muted">{{ counts.not_embedded }} chunks not embedded (tables, Key Terms lists, chunks you kept out in R1)</span>
+    </p>
+  </header>
+
+  <h2>By chapter</h2>
+  <table class="r5-table">
+    <thead><tr><th>Chapter</th><th>English embedded</th><th>Thai embedded</th><th>To embed</th><th>Not embedded</th></tr></thead>
+    <tbody>
+    {% for ch in chapters %}
+      <tr><td>{{ ch.title }}</td><td>{{ ch.en_done }} / {{ ch.en_total }}</td><td>{{ ch.th_done }} / {{ ch.th_total }}</td>
+        <td>{{ ch.en_todo + ch.th_todo }}</td><td class="muted">{{ ch.not_embedded }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  {% if page %}
+  <h2 id="page">What is embedded · page {{ page }}</h2>
+  <nav class="pagenav">
+    {% if prev_page %}<a class="btn" href="?page={{ prev_page }}#page">◀ p{{ prev_page }}</a>{% endif %}
+    <form method="get" class="goto"><label>Page <input name="page" value="{{ page }}" size="4" inputmode="numeric"></label></form>
+    {% if next_page %}<a class="btn" href="?page={{ next_page }}#page">p{{ next_page }} ▶</a>{% endif %}
+  </nav>
+  {% for p in on_page %}
+  <article class="embed-card">
+    <header><span class="pill">{{ p.kind|replace("_", " ") }}</span></header>
+    <div class="embed-pair">
+      <div>
+        <p class="embed-state state-{{ p.en|replace(' ', '-') }}">English · {{ p.en }}{% if p.en_reason %}: {{ p.en_reason }}{% endif %}</p>
+        {% if not p.en_reason %}<pre class="embed-text" lang="en">{{ p.en_text }}</pre>{% endif %}
+      </div>
+      <div>
+        <p class="embed-state state-{{ p.th|replace(' ', '-') }}">Thai · {{ p.th }}{% if p.th_reason %}: {{ p.th_reason }}{% endif %}</p>
+        {% if not p.th_reason %}<pre class="embed-text" lang="th">{{ p.th_text }}</pre>{% endif %}
+      </div>
+    </div>
+  </article>
+  {% endfor %}
+  {% endif %}
+</section>
+{% endblock %}
