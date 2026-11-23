@@ -1,0 +1,16 @@
+{% if others %}
+<details class="others" id="others" {% if others|length <= 8 %}open{% endif %}>
+  <summary>Other text on this page <span class="muted">({{ others|length }}: headings, page header, contents, tables, bookmarks)</span></summary>
+  <p class="muted">These aren't chunks, so they don't need approving. Fix a translation and press Enter or Save; your Thai is reused wherever the same English appears. A heading's contents title and bookmark follow it.</p>
+  {% for o in others %}
+  <form class="other" hx-post="{{ o.url }}">
+    <span class="pill">{{ o.label }}</span>
+    <span class="en" lang="en">{{ o.en }}</span>
+    {% if o.pos %}<input type="hidden" name="pos" value="{{ o.pos }}">{% endif %}
+    <input name="text" lang="th" value="{{ o.th }}" required placeholder="not translated yet (shown in English)" aria-label="Thai for {{ o.label|lower }}: {{ o.en }}">
+    <button>Save</button>
+    {% if o.source == "human" %}<span class="pill src-human" title="You edited this">you</span>{% endif %}
+  </form>
+  {% endfor %}
+</details>
+{% endif %}

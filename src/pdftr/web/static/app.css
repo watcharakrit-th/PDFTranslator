@@ -191,6 +191,13 @@ tr.missing .thai input { border-color: var(--warn); }
 .pill.src-human { background: var(--ok-bg); color: var(--ok); }
 .flag.soft { background: var(--line); color: var(--muted); border-color: transparent; }
 .chunk .issues { margin: 4px 0 0; font-size: 12px; color: var(--warn); }
+.others { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.others summary { cursor: pointer; font-weight: 600; }
+.others > p { font-size: 12px; margin: 6px 0; }
+.other { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.4fr) auto auto;
+  gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.other .en { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.other input[name=text] { width: 100%; box-sizing: border-box; }
 .box.thin { border-width: 1px; }
 .banner { margin: 0; padding: 6px 10px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); }
 .seg a.btn { border-radius: 0; padding: 4px 10px; }

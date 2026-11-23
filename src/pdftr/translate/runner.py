@@ -14,6 +14,8 @@ from psycopg.types.json import Jsonb
 
 from pdftr.gpu import GpuGuard, GpuTooHot
 from pdftr.ingest.textutil import split_sentences, strip_markup, word_count
+from pdftr.render.contents import entries, exclusions, is_contents
+from pdftr.render.contents import key as title_key
 from pdftr.translate import memory
 from pdftr.translate.checks import check
 from pdftr.translate.engine import Engine, drop_echo
@@ -26,6 +28,7 @@ from pdftr.translate.rules import (
     put_back_kept_names,
     rules_for,
 )
+from pdftr.translate.titles import heading_thai, norm_title, translate_outline
 
 PROMPT_VERSION = "2"  # 2: names and acronyms stay English (style rule)
 LONG_WORDS = 120  # longer text is translated a few sentences at a time
@@ -91,12 +94,17 @@ def plan_units(conn: psycopg.Connection, doc_id: int, first: int, last: int):
             markup = c["markup_en"] or html.escape(c["text_en"], quote=False)
             units.append(Unit("chunks", c["id"], markup, c["page_start"], c["tr_key"], c["has_th"]))
     blocks = conn.execute(
-        """SELECT id, role, page_no, markup_en, text_en, tr_key, markup_th IS NOT NULL AS has_th
-           FROM blocks WHERE doc_id=%s AND page_no BETWEEN %s AND %s AND translate
-           ORDER BY ord""",
+        """SELECT b.id, b.role, b.page_no, b.markup_en, b.text_en, b.tr_key,
+                  b.markup_th IS NOT NULL AS has_th, p.kind AS page_kind
+           FROM blocks b JOIN pages p ON p.doc_id = b.doc_id AND p.page_no = b.page_no
+           WHERE b.doc_id=%s AND b.page_no BETWEEN %s AND %s AND b.translate
+           ORDER BY b.ord""",
         (doc_id, first, last),
     ).fetchall()
     for b in blocks:
+        if is_contents(b):  # contents pages: titles are translated cell by cell
+            tables.append(b["id"])
+            continue
         own = b["id"] in mcq_blocks
         extra = b["role"] in ("heading", "header") and b["id"] not in covered
         if (own or extra) and LETTERS_RE.search(b["text_en"] or ""):
@@ -315,7 +323,18 @@ def translate_document(
                 f"from memory, {stats['unchanged']} unchanged · {flagged} flagged · "
                 f"ETA {eta / 60:.0f} min" + (f" · GPU hot spot {temp}°C" if temp else "")
             )
-    stats["table_cells"] = translate_tables(conn, tables, engine, glossary, force=force)
+    titles = heading_thai(conn, doc_id)  # contents and bookmarks reuse heading Thai
+    stats["table_cells"] = translate_tables(
+        conn, tables, engine, glossary, force=force, titles=titles, log=log
+    )
+
+    def title(markup: str):
+        markup_th, key, outcome = translate_text(conn, engine, glossary, markup, force=force)
+        return markup_th, key, outcome.flags
+
+    stats["outline"] = translate_outline(
+        conn, doc_id, title, first=first, last=last, force=force, titles=titles
+    )
     apply_to_blocks(conn, doc_id, first, last)
     conn.commit()
     advanced = _advance_stage(conn, doc_id)
@@ -339,12 +358,28 @@ def translate_tables(
     glossary: Glossary,
     *,
     force: bool = False,
+    titles: dict[str, str] | None = None,
+    log: Callable[[str], None] = lambda _m: None,
 ) -> int:
-    """Translate the text cells of tables (code-like cells stay as they are)."""
+    """Translate the text cells of tables and contents pages (code-like cells and page
+    numbers stay as they are). A contents title reuses its heading's Thai if known."""
     count = 0
+    pdf = None
     for b in conn.execute(
-        "SELECT id, style, cells_th FROM blocks WHERE id = ANY(%s)", (block_ids,)
+        """SELECT b.id, b.doc_id, b.page_no, b.role, b.x0, b.y0, b.x1, b.y1, b.style,
+                  b.cells_th, p.kind AS page_kind, d.file_path
+           FROM blocks b JOIN pages p ON p.doc_id = b.doc_id AND p.page_no = b.page_no
+                JOIN documents d ON d.id = b.doc_id
+           WHERE b.id = ANY(%s) ORDER BY b.ord""",
+        (block_ids,),
     ).fetchall():
+        if is_contents(b):
+            if pdf is None:
+                import pymupdf
+
+                pdf = pymupdf.open(b["file_path"])
+            count = _translate_contents(conn, b, pdf, engine, glossary, force, titles, log, count)
+            continue
         cells = (b["style"] or {}).get("cells") or []
         done = dict(b["cells_th"] or {})
         for cell in cells:
@@ -357,6 +392,8 @@ def translate_tables(
             )
             done[pos] = strip_markup(markup_th or "")
             count += 1
+            if count % 25 == 0:
+                log(f"  tables and contents: {count} cells")
             conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done), b["id"]))
             conn.commit()
         conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done), b["id"]))
@@ -369,6 +406,35 @@ def translate_tables(
             "translated_at=now() WHERE id=%s",
             (_table_markdown(conn, c["block_ids"]), c["id"]),
         )
+    return count
+
+
+def _translate_contents(conn, b, pdf, engine, glossary, force, titles, log, count) -> int:
+    """A contents block, entry by entry (see pdftr.render.contents); Thai under title keys."""
+    done = {k: v for k, v in (b["cells_th"] or {}).items() if k.startswith("t:")}
+    others = conn.execute(
+        "SELECT role, x0, y0, x1, y1, translate FROM blocks WHERE doc_id=%s AND page_no=%s",
+        (b["doc_id"], b["page_no"]),
+    ).fetchall()
+    page = pdf[b["page_no"] - 1]
+    for e in entries(page, (b["x0"], b["y0"], b["x1"], b["y1"]), exclusions(others)):
+        k = title_key(e.title)
+        if (k in done and not force) or not LETTERS_RE.search(e.title):
+            continue
+        same = (titles or {}).get(norm_title(e.title))
+        if same:
+            done[k] = same
+        else:
+            markup_th, _key, _outcome = translate_text(
+                conn, engine, glossary, html.escape(e.title, quote=False), force=force
+            )
+            done[k] = strip_markup(markup_th or "")
+        count += 1
+        if count % 25 == 0:
+            log(f"  tables and contents: {count} cells")
+        conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done), b["id"]))
+        conn.commit()
+    conn.execute("UPDATE blocks SET cells_th=%s WHERE id=%s", (Jsonb(done), b["id"]))
     return count
 
 

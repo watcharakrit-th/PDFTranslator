@@ -81,10 +81,10 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 - **Page furniture:**
   - The chapter title in the running header is translated, and the page number is kept.
   - The copyright footer is kept as is.
-  - TOC titles are translated in place. Their page numbers stay valid because pages stay paired.
+  - Contents titles are translated in place. Their page numbers stay valid because pages stay paired.
   - Index and bibliography pages are copied unchanged.
 - **Bookmarks:** the book's outline, with titles translated.
-- **Known issue (found in the prototype):** copying Thai text out of the PDF gives wrong tone marks in some words (คำสั่ง → คําสัǪง) and adds spaces between words. This happens with every Thai font tested; it's a PyMuPDF text-layer issue, and the page looks correct. Planned fix: rewrite the font's character map after rendering (milestone M4). The database always stores the correct Thai.
+- **Copyable text:** the text layer that PyMuPDF writes for Thai garbles it. Tone-mark variants copy as Latin letters (คำสั่ง → คําสัǪง), ำ copies as two characters, and every word gets a space. pdftr repairs each Thai page after drawing it (M4), so copying and Ctrl+F give the real Thai. The page looks exactly the same.
 
 ## 7. Storage and search
 
@@ -133,7 +133,7 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 | M1 ✅ 2026-11-21 | Project skeleton, Docker Postgres, schema, `ingest` (Docling + PyMuPDF), cutter, term candidates | Ingest a book and inspect chunks in the DB |
 | M2 ✅ 2026-11-22 | Review web page: R1, R2, R3 | Review chunks and terms |
 | M3 ✅ 2026-11-22 | Typhoon engine, translation memory, R4 with Thai page preview, hot-spot GPU guard | Get a fully translated, reviewed book |
-| M4 | Full-book renderer, side-by-side + alternate layouts, bookmarks, text-layer fix | Read the bilingual PDF |
+| M4 ✅ 2026-11-23 | Full-book renderer, side-by-side + alternate layouts, bookmarks, text-layer fix | Read the bilingual PDF |
 | M5 | BGE-M3 embedding, R5, `search` | Search your books in Thai or English |
 | M6 | Claude engine, Linux deployment guide | Switch engines, move to the server |
 
@@ -215,10 +215,38 @@ Embedded text = **context + chunk**. The context is the section path (`Chapter 7
 - **Lost text:** text that did not fit used to disappear from the Thai page. It is now always drawn.
 - **Shrinking:** short lines may widen. On four test pages, text areas that had to shrink went from 26 to 6.
 
-## 15. Open items
+## 15. M4 results
 
-- **Power limit:** the 150 W limit resets at every reboot. The README has a one-line scheduled task that re-applies it at sign-in. The fans stay off below about 60 °C (core) and reached 51% in the test. A custom fan curve, or fresh thermal paste, would cool the GPU further, because a 25 °C gap between core and hot spot is large.
-- **Headings and running headers:** they are translated and shown on the Thai page, but R4 can't edit them yet. Planned for M4, together with the TOC and bookmark titles.
-- **Thai text layer:** copying text from the Thai page still gives wrong marks in some words. The page looks right. Fixed in M4.
+- **`pdftr render`:** builds the bilingual PDF.
+  - **Layouts:** side by side, with English left and Thai right on one sheet per page; or `--layout alternate`, with the English page followed by its Thai page.
+  - **Pages left in English:** the cover, title, copyright, index, bibliography and blank pages, plus any page without Thai yet, show the English on both sides.
+  - **Bookmarks** follow the book's outline. A bookmark title that matches a heading reuses the heading's Thai; any other title is translated along with its pages.
+  - **Page labels** keep the book's numbering (i, ii … 1, 2 …).
+  - **Cache:** Thai pages are cached by content, the same cache R4's preview uses, so a re-render only redraws pages that changed.
+- **Copy and search:** the Thai on the bilingual PDF can be copied and searched.
+  - **The fixes:**
+    - the fonts' character maps are rebuilt from their glyph names;
+    - the cancelled spaces that marked line breaks are removed;
+    - each ำ is tagged with `/ActualText`;
+    - Latin ligatures copy as separate letters.
+  - **Checks:** tests confirm that the pixels are unchanged.
+  - **Result:** on CompTIA pages 15–34, 259 of 259 translated blocks copy out exactly. Before the fix, none did.
+- **Contents pages:** they are read from the PDF's own text lines, because Docling's cells merged some entries and split others.
+  - An entry is a title, with a wrapped second line if there is one, plus its page number. A number only counts as the page number when it is set apart, so "Chapter 11" stays whole.
+  - Each title is translated as one piece, reusing the heading's Thai where one matches. Page numbers are kept, and the Thai title may widen up to its number.
+  - Tables on contents pages (Docling's label for pages 8–10) are treated the same way.
+  - The 6 CompTIA contents pages hold 350 different titles.
+- **R4, other text on the page:** headings, the page header, contents entries, table cells and bookmark titles can all be corrected. Edits go into translation memory. Editing a heading also updates its contents title and bookmark, unless you edited those yourself.
+
+| Measure (CompTIA pages 1–100, side by side) | Result |
+|---|---|
+| Render | 11 s for 100 pages (26 with Thai); 1 s when nothing changed |
+| File | 5.4 MB; fonts and images are stored once |
+| Contents translation | 350 titles in 93 s; GPU hot spot peak 74 °C at 150 W, no waits or stops |
+
+## 16. Open items
+
+- **Power limit:** the 150 W limit resets at every reboot. The README has a one-line scheduled task that re-applies it at sign-in. The fans stay off below about 60 °C (core) and reached 51–56% in the tests. A custom fan curve, or fresh thermal paste, would cool the GPU further, because a 25 °C gap between core and hot spot is large.
+- **Links:** the book's internal links (for example, from the contents to a chapter) are not carried over into the bilingual PDF. Bookmarks and page labels handle navigation.
 
 - The third sample (*The Comprehensive DevOps Interview Guide*) is **damaged**. It was opened and saved as text, which replaced 5.3 million bytes with "�". Please copy it again from the original source using File Explorer, and don't open it in VS Code.

@@ -517,6 +517,7 @@ def _r4_routes(app: FastAPI) -> None:
             c["th_flagged"] = bool(c["tr_flags"]) or c["overflow"]
         rth.add_glossary_issues(conn, doc["id"], data["chunks"])
         ctx.update(
+            others=rth.other_text(conn, doc["id"], page),
             step="r4",
             only=only if only in ("all", "pending", "flagged") else "all",
             view=view if view in ("thai", "english") else "thai",
@@ -625,6 +626,26 @@ def _r4_routes(app: FastAPI) -> None:
                 rth.retranslate(conn, chunk_id, engine)
             except GpuTooHot as exc:
                 raise ReviewError(f"Stopped to protect the GPU: {exc}. Try again later.") from exc
+        return _refresh()
+
+    @app.post("/doc/{doc_id}/blocks/{block_id}/th/edit")
+    def block_th_edit(request: Request, doc_id: int, block_id: int, text: str = Form(...)):
+        with db(request) as conn:
+            rth.edit_block_thai(conn, doc_id, block_id, text)
+        return _refresh()
+
+    @app.post("/doc/{doc_id}/blocks/{block_id}/cells/th/edit")
+    def cell_th_edit(
+        request: Request, doc_id: int, block_id: int, pos: str = Form(...), text: str = Form(...)
+    ):
+        with db(request) as conn:
+            rth.edit_cell_thai(conn, doc_id, block_id, pos, text)
+        return _refresh()
+
+    @app.post("/doc/{doc_id}/outline/{entry_id}/th/edit")
+    def outline_th_edit(request: Request, doc_id: int, entry_id: int, text: str = Form(...)):
+        with db(request) as conn:
+            rth.edit_outline_thai(conn, doc_id, entry_id, text)
         return _refresh()
 
     @app.post("/doc/{doc_id}/r4/approve-page")

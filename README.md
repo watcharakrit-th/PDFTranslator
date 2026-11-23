@@ -96,8 +96,25 @@ under load. The core temperature is what `nvidia-smi` and most tools report.
 - **Preview:** `pdftr translate <doc> --pages 15-24` works before R3 too, to judge quality early.
 - **GPU safety:** see [GPU safety](#gpu-safety). The R3 **Suggest** and R4 **Re-translate** buttons follow the same limits.
 - **R4 · Thai chunks:** on the review page, the left side shows the **Thai page preview** (the right side of the bilingual PDF), or the English page. Each chunk card shows the English, the Thai, where the Thai came from (machine / memory / you / kept in English), any check flags (a glossary flag names its term), and whether the Thai had to shrink or did not fit. You can approve, **Edit Thai** (which also approves it) or **Re-translate** a chunk.
+- **Other text on the page:** below the chunk cards, R4 lists the page's headings, running header, contents and table cells, and bookmark titles, each with its Thai. Fix one and press Enter.
+  - Your Thai is reused wherever the same English appears.
+  - Editing a heading also updates its contents title and bookmark, unless you edited those yourself.
 - **`pdftr render-page <doc> <page>`** writes one Thai page as PNG and PDF.
 - **Model license:** the Typhoon Translate model card lists Apache-2.0 in its metadata but the Gemma license in its text, plus the OpenTyphoon terms of use. That's fine for this personal tool; check both before any commercial use.
+
+## Bilingual PDF (M4)
+
+```powershell
+.venv\Scripts\pdftr render 1                     # English left, Thai right, one sheet per page
+.venv\Scripts\pdftr render 1 --layout alternate  # English page, then its Thai page
+.venv\Scripts\pdftr render 1 --pages 15-34       # just some pages
+```
+
+- **Output:** the PDF goes to `data\output\` unless you pass `--out`. You can re-run `render` any time. Pages whose Thai hasn't changed come from the cache, so a re-run takes seconds; it also tells you how many chunks are still untranslated or unapproved.
+- **What stays English:** the cover, title, copyright, index, bibliography and blank pages are shown in English on both sides, and so is any page without Thai yet.
+- **Contents pages** are translated title by title and keep their page numbers. Titles that match a heading reuse the heading's Thai, so the contents, the chapter and the bookmarks agree.
+- **Navigation:** bookmarks follow the book's outline with Thai titles. Page labels keep the book's numbering (i, ii … 1, 2 …), so "go to page 54" works. In the alternate layout, Thai pages are labelled "54 TH".
+- **Copy and search:** Thai text copies out correctly and Ctrl+F finds Thai words, because pdftr repairs the text layer that the drawing engine writes. The page looks exactly the same.
 
 ## Commands
 
@@ -105,6 +122,7 @@ under load. The core temperature is what `nvidia-smi` and most tools report.
 |---|---|
 | `pdftr translate <doc> [--pages 15-24] [--force]` | Translate (after R3; any time with `--pages`) |
 | `pdftr ollama status` / `pdftr ollama pull` | Check Ollama / download the translation model |
+| `pdftr render <doc> [--layout alternate] [--pages 15-34] [--out file.pdf]` | Build the bilingual PDF |
 | `pdftr render-page <doc> <page>` | One Thai page as PNG + PDF |
 | `pdftr review [--port 8765] [--no-open]` | Open the review web page (R1–R3) |
 | `pdftr glossary export\|import <csv>` | Glossary to / from CSV (UTF-8, opens in Excel) |
